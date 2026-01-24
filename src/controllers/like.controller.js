@@ -1,4 +1,4 @@
-import { pool } from "../db/db.js";
+import { pool } from "../db/index.js";
 
 export const likeUser = async (req, res) => {
   const from = req.user.id;
