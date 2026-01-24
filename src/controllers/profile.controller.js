@@ -15,16 +15,16 @@ export const updateProfile = async (req, res) => {
 
     // 2. ფოტოების განახლება
     if (photos && Array.isArray(photos)) {
-      // ჯერ ვშლით ძველ ფოტოებს (რომლებსაც მერე თავიდან ჩავწერთ ახალი რიგითობით)
+      // ჯერ ვშლით ყველა ძველ ფოტოს
       await pool.query("DELETE FROM photos WHERE user_id = $1", [userId]);
 
-      // სათითაოდ ვამატებთ ახალ ფოტოებს
-      for (let i = 0; i < photos.length; i++) {
-        if (photos[i]) {
+      // სათითაოდ ვამატებთ ახალ ფოტოებს თავისივე პოზიციით
+      for (const photo of photos) {
+        if (photo && photo.image_url) {
           await pool.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
             userId,
-            photos[i],
-            i,
+            photo.image_url,
+            photo.position || 0, // ვიყენებთ ფრონტენდიდან მოსულ პოზიციას
           ]);
         }
       }
@@ -40,8 +40,6 @@ export const updateProfile = async (req, res) => {
 export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    // ვიღებთ მომხმარებლის ინფორმაციას
     const userResult = await pool.query(
       "SELECT id, username, email, full_name, bio, gender, city, age FROM users WHERE id=$1",
       [userId],
@@ -51,15 +49,12 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" });
     }
 
-    // ვიღებთ მომხმარებლის ფოტოებს რიგითობის მიხედვით
     const photosResult = await pool.query(
       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
     );
 
     const user = userResult.rows[0];
-
-    // ვაწყობთ საბოლოო ობიექტს
     res.json({
       ...user,
       full_name: user.full_name || "",
@@ -67,7 +62,7 @@ export const getMe = async (req, res) => {
       city: user.city || "",
       age: user.age || "",
       gender: user.gender || "other",
-      photos: photosResult.rows, // ეს დაუბრუნებს ფოტოების მასივს ფრონტენდს
+      photos: photosResult.rows,
     });
   } catch (err) {
     console.error("GET ME ERROR:", err);
