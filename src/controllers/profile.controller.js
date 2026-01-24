@@ -15,16 +15,14 @@ export const updateProfile = async (req, res) => {
 
     // 2. ფოტოების განახლება
     if (photos && Array.isArray(photos)) {
-      // ჯერ ვშლით ყველა ძველ ფოტოს
       await pool.query("DELETE FROM photos WHERE user_id = $1", [userId]);
 
-      // სათითაოდ ვამატებთ ახალ ფოტოებს თავისივე პოზიციით
       for (const photo of photos) {
         if (photo && photo.image_url) {
           await pool.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
             userId,
             photo.image_url,
-            photo.position || 0, // ვიყენებთ ფრონტენდიდან მოსულ პოზიციას
+            photo.position || 0,
           ]);
         }
       }
@@ -67,5 +65,35 @@ export const getMe = async (req, res) => {
   } catch (err) {
     console.error("GET ME ERROR:", err);
     res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
+  }
+};
+
+// ახალი ფუნქცია Discovery-სთვის (MainPage-ზე გამოსაჩენად)
+export const getDiscovery = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // ვიღებთ მომხმარებლებს და მათ ფოტოებს (JSON_AGG აერთიანებს ფოტოებს მასივში)
+    const discoveryResult = await pool.query(
+      `SELECT 
+        u.id, u.full_name, u.age, u.city, u.bio,
+        COALESCE(
+          JSON_AGG(
+            JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position)
+            ORDER BY p.position ASC
+          ) FILTER (WHERE p.id IS NOT NULL), '[]'
+        ) AS photos
+      FROM users u
+      LEFT JOIN photos p ON u.id = p.user_id
+      WHERE u.id != $1
+      GROUP BY u.id
+      LIMIT 20`,
+      [userId],
+    );
+
+    res.json(discoveryResult.rows);
+  } catch (err) {
+    console.error("GET DISCOVERY ERROR:", err);
+    res.status(500).json({ error: "Discovery მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
