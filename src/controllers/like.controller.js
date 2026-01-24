@@ -1,4 +1,4 @@
-import { pool } from "../db.js";
+import { pool } from "../db/db.js";
 
 export const likeUser = async (req, res) => {
   const from = req.user.id;
@@ -9,7 +9,7 @@ export const likeUser = async (req, res) => {
   const match = await pool.query(
     `SELECT * FROM likes
      WHERE from_user_id=$1 AND to_user_id=$2`,
-    [to, from]
+    [to, from],
   );
 
   if (match.rows.length) {
