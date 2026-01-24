@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth.routes.js";
 import likeRoutes from "./routes/like.routes.js";
 import "./db/index.js";
-import profileRoutes from "./routes/profile.routes";
+import profileRoutes from "./routes/profile.routes.js";
 
 dotenv.config(); // აუცილებელია აქ
 
