@@ -130,13 +130,19 @@ export const getChatMessages = async (req, res) => {
   try {
     const userId = req.user.id;
     const { partnerId } = req.params;
+
+    // აქ ვამოწმებთ ორივე მხარეს
     const messages = await pool.query(
-      `SELECT * FROM messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1) ORDER BY created_at ASC`,
+      `SELECT * FROM messages 
+       WHERE (sender_id = $1 AND receiver_id = $2) 
+          OR (sender_id = $2 AND receiver_id = $1) 
+       ORDER BY created_at ASC`,
       [userId, partnerId],
     );
     res.json(messages.rows);
   } catch (err) {
-    res.status(500).json({ error: "Error messages" });
+    console.error("GET MESSAGES ERROR:", err);
+    res.status(500).json({ error: "მესიჯების წამოღება ვერ მოხერხდა" });
   }
 };
 
@@ -145,10 +151,7 @@ export const sendMessage = async (req, res) => {
     const senderId = req.user.id;
     const { receiverId, content } = req.body;
 
-    if (!content || !receiverId) {
-      return res.status(400).json({ error: "Missing data" });
-    }
-
+    // აქ ჩაწერე ის სახელი, რაც ბაზაში გაქვს (მაგ: receiver_id)
     const newMessage = await pool.query(
       "INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3) RETURNING *",
       [senderId, receiverId, content],
@@ -156,13 +159,13 @@ export const sendMessage = async (req, res) => {
 
     const messageData = newMessage.rows[0];
 
-    // ვაგზავნით რეალურ დროში ადრესატთან და ჩემთან (სხვა დევაისებისთვის)
+    // Socket-ით გაგზავნა
     io.to(receiverId.toString()).emit("new_message", messageData);
     io.to(senderId.toString()).emit("new_message", messageData);
 
     res.json(messageData);
   } catch (err) {
     console.error("SEND MESSAGE ERROR:", err);
-    res.status(500).json({ error: "მესიჯი ვერ გაიგზავნა" });
+    res.status(500).json({ error: "ბაზაში ჩაწერა ვერ მოხერხდა. შეამოწმე სვეტის სახელი!" });
   }
 };
