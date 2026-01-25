@@ -1,4 +1,5 @@
 import { pool } from "../db/index.js";
+import { io } from "../server.js"; // დაიმპორტე ზემოთ შექმნილი io
 
 export const updateProfile = async (req, res) => {
   try {
@@ -95,5 +96,102 @@ export const getDiscovery = async (req, res) => {
   } catch (err) {
     console.error("GET DISCOVERY ERROR:", err);
     res.status(500).json({ error: "Discovery მონაცემების წამოღება ვერ მოხერხდა" });
+  }
+};
+
+export const addLike = async (req, res) => {
+  try {
+    const userId = req.user.id; // ვინც აკეთებს სვაიპს
+    const { targetUserId, type } = req.body; // type: 'like' ან 'pass'
+
+    if (type === "like") {
+      // ჩავწეროთ ლაიქი
+      await pool.query("INSERT INTO likes (user_id, target_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+        userId,
+        targetUserId,
+      ]);
+
+      // შევამოწმოთ Match-ი (თუ იმ იუზერსაც უკვე დალაიქებული ვყავართ)
+      const matchCheck = await pool.query("SELECT id FROM likes WHERE user_id = $1 AND target_user_id = $2", [
+        targetUserId,
+        userId,
+      ]);
+
+      if (matchCheck.rows.length > 0) {
+        return res.json({ success: true, isMatch: true });
+      }
+    }
+
+    res.json({ success: true, isMatch: false });
+  } catch (err) {
+    console.error("LIKE ERROR:", err);
+    res.status(500).json({ error: "ქმედების ჩაწერა ვერ მოხერხდა" });
+  }
+};
+
+export const getMatches = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // ვეძებთ იუზერებს, სადაც ლაიქი არის ორმხრივი
+    const matchesResult = await pool.query(
+      `SELECT 
+        u.id, u.full_name, u.username,
+        (SELECT image_url FROM photos WHERE user_id = u.id AND position = 0 LIMIT 1) as main_photo
+      FROM users u
+      JOIN likes l1 ON l1.target_user_id = u.id
+      JOIN likes l2 ON l2.user_id = u.id
+      WHERE l1.user_id = $1 AND l2.target_user_id = $1`,
+      [userId],
+    );
+
+    res.json(matchesResult.rows);
+  } catch (err) {
+    console.error("GET MATCHES ERROR:", err);
+    res.status(500).json({ error: "Matches წამოღება ვერ მოხერხდა" });
+  }
+};
+
+// მესიჯების ისტორიის წამოღება
+export const getChatMessages = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { partnerId } = req.params;
+
+    const messages = await pool.query(
+      `SELECT * FROM messages 
+       WHERE (sender_id = $1 AND receiver_id = $2) 
+          OR (sender_id = $2 AND receiver_id = $1)
+       ORDER BY created_at ASC`,
+      [userId, partnerId],
+    );
+
+    res.json(messages.rows);
+  } catch (err) {
+    console.error("GET MESSAGES ERROR:", err);
+    res.status(500).json({ error: "მესიჯების წამოღება ვერ მოხერხდა" });
+  }
+};
+
+// მესიჯის გაგზავნა
+export const sendMessage = async (req, res) => {
+  try {
+    const senderId = req.user.id;
+    const { receiverId, content } = req.body;
+
+    const newMessage = await pool.query(
+      "INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3) RETURNING *",
+      [senderId, receiverId, content],
+    );
+
+    const messageData = newMessage.rows[0];
+
+    // ვუგზავნით მესიჯს რეალურ დროში ადრესატს მის "ოთახში"
+    io.to(receiverId).emit("new_message", messageData);
+
+    res.json(messageData);
+  } catch (err) {
+    console.error("SEND MESSAGE ERROR:", err);
+    res.status(500).json({ error: "მესიჯი ვერ გაიგზავნა" });
   }
 };

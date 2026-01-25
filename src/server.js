@@ -1,11 +1,45 @@
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import cors from "cors";
 import dotenv from "dotenv";
-import app from "./app.js";
+import profileRoutes from "./routes/profile.routes.js"; // შეამოწმე გზა
 
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // React Native-ისთვის
+    methods: ["GET", "POST"],
+  },
+});
 
-// სერვერის გაშვება ხდება მხოლოდ აქ
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server is live on: http://0.0.0.0:${PORT}`);
+app.use(cors());
+app.use(express.json());
+
+app.use("/api/profile", profileRoutes);
+
+// Socket.io ლოგიკა
+io.on("connection", (socket) => {
+  console.log("A user connected:", socket.id);
+
+  // მომხმარებლის ოთახში შესვლა (მისი ID-ს მიხედვით)
+  socket.on("join", (userId) => {
+    socket.join(userId);
+    console.log(`User ${userId} joined their room`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected");
+  });
+});
+
+// ექსპორტი, რომ კონტროლერმა შეძლოს მესიჯების გაგზავნა
+export { io };
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
