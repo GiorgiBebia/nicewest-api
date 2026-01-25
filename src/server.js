@@ -9,24 +9,39 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// Socket.io კონფიგურაცია
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 
 app.use(cors());
 app.use(express.json());
 
-// აქ ვამბობთ, რომ ყველა პროფილის როუტი დაიწყოს /api/profile-ით
-app.use("/api/profile", profileRoutes);
+// ვამაგრებთ როუტებს პირდაპირ /profile-ზე
+app.use("/profile", profileRoutes);
 
 // Socket.io ლოგიკა
 io.on("connection", (socket) => {
-  socket.on("join", (userId) => socket.join(userId));
+  console.log("User connected:", socket.id);
+
+  socket.on("join", (userId) => {
+    socket.join(userId);
+    console.log(`User ${userId} joined room`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected");
+  });
 });
 
+// ექსპორტი კონტროლერისთვის
 export { io };
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server is running on http://localhost:${PORT}`);
+  console.log(`🚀 Server is running on port ${PORT}`);
 });
