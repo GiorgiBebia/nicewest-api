@@ -131,7 +131,6 @@ export const getChatMessages = async (req, res) => {
     const userId = req.user.id;
     const { partnerId } = req.params;
 
-    // აქ ვამოწმებთ ორივე მხარეს
     const messages = await pool.query(
       `SELECT * FROM messages 
        WHERE (sender_id = $1 AND receiver_id = $2) 
@@ -149,23 +148,23 @@ export const getChatMessages = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
-    const { receiverId, content } = req.body;
+    const { receiverId, content } = req.body; // ფრონტენდიდან მოდის content
 
-    // აქ ჩაწერე ის სახელი, რაც ბაზაში გაქვს (მაგ: receiver_id)
+    // ბაზაში ვწერთ 'text' სვეტში
     const newMessage = await pool.query(
-      "INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3) RETURNING *",
+      "INSERT INTO messages (sender_id, receiver_id, text) VALUES ($1, $2, $3) RETURNING *",
       [senderId, receiverId, content],
     );
 
     const messageData = newMessage.rows[0];
 
-    // Socket-ით გაგზავნა
+    // Socket-ით ვაგზავნით ყველასთან
     io.to(receiverId.toString()).emit("new_message", messageData);
     io.to(senderId.toString()).emit("new_message", messageData);
 
     res.json(messageData);
   } catch (err) {
     console.error("SEND MESSAGE ERROR:", err);
-    res.status(500).json({ error: "ბაზაში ჩაწერა ვერ მოხერხდა. შეამოწმე სვეტის სახელი!" });
+    res.status(500).json({ error: "ბაზაში ჩაწერა ვერ მოხერხდა" });
   }
 };
