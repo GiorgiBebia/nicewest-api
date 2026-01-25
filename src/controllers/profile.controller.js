@@ -100,32 +100,36 @@ export const getDiscovery = async (req, res) => {
 };
 
 export const addLike = async (req, res) => {
+  const { targetUserId, type } = req.body;
+  const myId = req.user.id;
+
   try {
-    const userId = req.user.id; // ვინც აკეთებს სვაიპს
-    const { targetUserId, type } = req.body; // type: 'like' ან 'pass'
+    // 1. ჩავწეროთ ლაიქი
+    await pool.query("INSERT INTO likes (user_id, target_user_id, type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [
+      myId,
+      targetUserId,
+      type,
+    ]);
 
-    if (type === "like") {
-      // ჩავწეროთ ლაიქი
-      await pool.query("INSERT INTO likes (user_id, target_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
-        userId,
+    // 2. შევამოწმოთ, ხომ არ მოვწონვართ ამ იუზერს უკვე? (საპირისპირო ლაიქი)
+    const reverseLike = await pool.query(
+      "SELECT id FROM likes WHERE user_id = $1 AND target_user_id = $2 AND type = 'like'",
+      [targetUserId, myId],
+    );
+
+    if (reverseLike.rows.length > 0) {
+      // 3. თუ ორივემ მოვიწონეთ, ვქმნით Match-ს
+      await pool.query("INSERT INTO matches (user_one_id, user_two_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+        myId,
         targetUserId,
       ]);
-
-      // შევამოწმოთ Match-ი (თუ იმ იუზერსაც უკვე დალაიქებული ვყავართ)
-      const matchCheck = await pool.query("SELECT id FROM likes WHERE user_id = $1 AND target_user_id = $2", [
-        targetUserId,
-        userId,
-      ]);
-
-      if (matchCheck.rows.length > 0) {
-        return res.json({ success: true, isMatch: true });
-      }
+      return res.json({ isMatch: true });
     }
 
-    res.json({ success: true, isMatch: false });
+    res.json({ isMatch: false });
   } catch (err) {
-    console.error("LIKE ERROR:", err);
-    res.status(500).json({ error: "ქმედების ჩაწერა ვერ მოხერხდა" });
+    console.error(err);
+    res.status(500).json({ message: "Error adding like" });
   }
 };
 

@@ -5,6 +5,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import profileRoutes from "./routes/profile.routes.js";
 import authRoutes from "./routes/auth.routes.js"; // დარწმუნდი რომ გაქვს ეს ფაილი
+import likeRoutes from "./routes/like.routes.js"; // <-- შემოიტანე
 
 dotenv.config();
 
@@ -25,6 +26,7 @@ app.use(express.json());
 // ვამაგრებთ როუტებს პირდაპირ /profile-ზე
 app.use("/profile", profileRoutes);
 app.use("/auth", authRoutes); // <--- ეს აუცილებელია ლოგინისთვის!
+app.use("/likes", likeRoutes); // <-- დაამატე ეს ხაზი
 
 // Socket.io ლოგიკა
 io.on("connection", (socket) => {
