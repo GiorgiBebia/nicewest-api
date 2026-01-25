@@ -1,23 +1,22 @@
 import { pool } from "../db/index.js";
-import { io } from "../server.js"; // დაიმპორტე ზემოთ შექმნილი io
+import { io } from "../server.js";
 
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const { full_name, bio, gender, city, age, photos } = req.body;
 
-    // 1. მომხმარებლის ძირითადი ინფორმაციის განახლება
-    await pool.query(
-      `UPDATE users 
-       SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5 
-       WHERE id=$6`,
-      [full_name, bio, gender, city, age, userId],
-    );
+    await pool.query(`UPDATE users SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5 WHERE id=$6`, [
+      full_name,
+      bio,
+      gender,
+      city,
+      age,
+      userId,
+    ]);
 
-    // 2. ფოტოების განახლება
     if (photos && Array.isArray(photos)) {
       await pool.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-
       for (const photo of photos) {
         if (photo && photo.image_url) {
           await pool.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
@@ -28,11 +27,10 @@ export const updateProfile = async (req, res) => {
         }
       }
     }
-
-    res.json({ success: true, message: "პროფილი და ფოტოები წარმატებით განახლდა" });
+    res.json({ success: true, message: "პროფილი განახლდა" });
   } catch (err) {
     console.error("UPDATE ERROR:", err);
-    res.status(500).json({ error: "პროფილის განახლება ვერ მოხერხდა" });
+    res.status(500).json({ error: "შეცდომა განახლებისას" });
   }
 };
 
@@ -43,59 +41,34 @@ export const getMe = async (req, res) => {
       "SELECT id, username, email, full_name, bio, gender, city, age FROM users WHERE id=$1",
       [userId],
     );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" });
-    }
-
     const photosResult = await pool.query(
       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
     );
-
     const user = userResult.rows[0];
-    res.json({
-      ...user,
-      full_name: user.full_name || "",
-      bio: user.bio || "",
-      city: user.city || "",
-      age: user.age || "",
-      gender: user.gender || "other",
-      photos: photosResult.rows,
-    });
+    res.json({ ...user, photos: photosResult.rows });
   } catch (err) {
-    console.error("GET ME ERROR:", err);
-    res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
+    res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
   }
 };
 
-// ახალი ფუნქცია Discovery-სთვის (MainPage-ზე გამოსაჩენად)
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    // ვიღებთ მომხმარებლებს და მათ ფოტოებს (JSON_AGG აერთიანებს ფოტოებს მასივში)
     const discoveryResult = await pool.query(
-      `SELECT 
-        u.id, u.full_name, u.age, u.city, u.bio,
-        COALESCE(
-          JSON_AGG(
-            JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position)
-            ORDER BY p.position ASC
-          ) FILTER (WHERE p.id IS NOT NULL), '[]'
-        ) AS photos
+      `SELECT u.id, u.full_name, u.age, u.city, u.bio,
+        COALESCE(JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
+        FILTER (WHERE p.id IS NOT NULL), '[]') AS photos
       FROM users u
       LEFT JOIN photos p ON u.id = p.user_id
-      WHERE u.id != $1
-      GROUP BY u.id
-      LIMIT 20`,
+      WHERE u.id != $1 
+      AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+      GROUP BY u.id LIMIT 20`,
       [userId],
     );
-
     res.json(discoveryResult.rows);
   } catch (err) {
-    console.error("GET DISCOVERY ERROR:", err);
-    res.status(500).json({ error: "Discovery მონაცემების წამოღება ვერ მოხერხდა" });
+    res.status(500).json({ error: "Discovery error" });
   }
 };
 
@@ -104,98 +77,81 @@ export const addLike = async (req, res) => {
   const myId = req.user.id;
 
   try {
-    // 1. ჩავწეროთ ლაიქი
-    await pool.query("INSERT INTO likes (user_id, target_user_id, type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [
-      myId,
-      targetUserId,
-      type,
-    ]);
-
-    // 2. შევამოწმოთ, ხომ არ მოვწონვართ ამ იუზერს უკვე? (საპირისპირო ლაიქი)
-    const reverseLike = await pool.query(
-      "SELECT id FROM likes WHERE user_id = $1 AND target_user_id = $2 AND type = 'like'",
-      [targetUserId, myId],
+    // 1. ჩავწეროთ ლაიქი (from_user_id და to_user_id გამოყენებით)
+    await pool.query(
+      `INSERT INTO likes (from_user_id, to_user_id) 
+       VALUES ($1, $2) 
+       ON CONFLICT (from_user_id, to_user_id) DO NOTHING`,
+      [myId, targetUserId],
     );
 
+    let isMatch = false;
+
+    // 2. ვამოწმებთ უკუგება ლაიქს
+    const reverseLike = await pool.query("SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [
+      targetUserId,
+      myId,
+    ]);
+
     if (reverseLike.rows.length > 0) {
-      // 3. თუ ორივემ მოვიწონეთ, ვქმნით Match-ს
-      await pool.query("INSERT INTO matches (user_one_id, user_two_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
-        myId,
-        targetUserId,
-      ]);
-      return res.json({ isMatch: true });
+      isMatch = true;
+      const [p1, p2] = [myId, targetUserId].sort();
+      // 3. ვქმნით მატჩს (user1_id და user2_id გამოყენებით)
+      await pool.query("INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [p1, p2]);
     }
 
-    res.json({ isMatch: false });
+    res.json({ success: true, isMatch });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Error adding like" });
+    console.error("LIKE ERROR:", err);
+    res.status(500).json({ message: "შეცდომა ლაიქისას" });
   }
 };
 
 export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    // ვეძებთ იუზერებს, სადაც ლაიქი არის ორმხრივი
+    // ვიყენებთ matches ცხრილს user1_id და user2_id სვეტებით
     const matchesResult = await pool.query(
-      `SELECT 
-        u.id, u.full_name, u.username,
-        (SELECT image_url FROM photos WHERE user_id = u.id AND position = 0 LIMIT 1) as main_photo
+      `SELECT u.id, u.full_name, u.username,
+        (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo
       FROM users u
-      JOIN likes l1 ON l1.target_user_id = u.id
-      JOIN likes l2 ON l2.user_id = u.id
-      WHERE l1.user_id = $1 AND l2.target_user_id = $1`,
+      JOIN matches m ON (u.id = m.user1_id OR u.id = m.user2_id)
+      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1`,
       [userId],
     );
-
     res.json(matchesResult.rows);
   } catch (err) {
     console.error("GET MATCHES ERROR:", err);
-    res.status(500).json({ error: "Matches წამოღება ვერ მოხერხდა" });
+    res.status(500).json({ error: "მატჩების წამოღება ვერ მოხერხდა" });
   }
 };
 
-// მესიჯების ისტორიის წამოღება
 export const getChatMessages = async (req, res) => {
   try {
     const userId = req.user.id;
     const { partnerId } = req.params;
-
     const messages = await pool.query(
-      `SELECT * FROM messages 
-       WHERE (sender_id = $1 AND receiver_id = $2) 
-          OR (sender_id = $2 AND receiver_id = $1)
-       ORDER BY created_at ASC`,
+      `SELECT * FROM messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1) ORDER BY created_at ASC`,
       [userId, partnerId],
     );
-
     res.json(messages.rows);
   } catch (err) {
-    console.error("GET MESSAGES ERROR:", err);
-    res.status(500).json({ error: "მესიჯების წამოღება ვერ მოხერხდა" });
+    res.status(500).json({ error: "Error messages" });
   }
 };
 
-// მესიჯის გაგზავნა
 export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
     const { receiverId, content } = req.body;
-
     const newMessage = await pool.query(
       "INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3) RETURNING *",
       [senderId, receiverId, content],
     );
-
     const messageData = newMessage.rows[0];
-
-    // ვუგზავნით მესიჯს რეალურ დროში ადრესატს მის "ოთახში"
-    io.to(receiverId).emit("new_message", messageData);
-
+    io.to(receiverId.toString()).emit("new_message", messageData);
     res.json(messageData);
   } catch (err) {
-    console.error("SEND MESSAGE ERROR:", err);
-    res.status(500).json({ error: "მესიჯი ვერ გაიგზავნა" });
+    res.status(500).json({ error: "Send error" });
   }
 };
