@@ -110,10 +110,12 @@ export const addLike = async (req, res) => {
 export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
-    // ვიყენებთ matches ცხრილს user1_id და user2_id სვეტებით
     const matchesResult = await pool.query(
       `SELECT u.id, u.full_name, u.username,
-        (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo
+        (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo,
+        (SELECT text FROM messages 
+         WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
+         ORDER BY created_at DESC LIMIT 1) as last_message
       FROM users u
       JOIN matches m ON (u.id = m.user1_id OR u.id = m.user2_id)
       WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1`,
