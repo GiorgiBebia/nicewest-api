@@ -4,37 +4,38 @@ import { Server } from "socket.io";
 import cors from "cors";
 import dotenv from "dotenv";
 import profileRoutes from "./routes/profile.routes.js";
-import authRoutes from "./routes/auth.routes.js"; // დარწმუნდი რომ გაქვს ეს ფაილი
-import likeRoutes from "./routes/like.routes.js"; // <-- შემოიტანე
+import authRoutes from "./routes/auth.routes.js";
+import likeRoutes from "./routes/like.routes.js";
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io კონფიგურაცია
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
   },
+  // Render-ისთვის აუცილებელი პარამეტრები
+  transports: ["polling", "websocket"],
 });
 
 app.use(cors());
 app.use(express.json());
 
-// ვამაგრებთ როუტებს პირდაპირ /profile-ზე
 app.use("/profile", profileRoutes);
-app.use("/auth", authRoutes); // <--- ეს აუცილებელია ლოგინისთვის!
-app.use("/likes", likeRoutes); // <-- დაამატე ეს ხაზი
+app.use("/auth", authRoutes);
+app.use("/likes", likeRoutes);
 
-// Socket.io ლოგიკა
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log("Connected:", socket.id);
 
   socket.on("join", (userId) => {
-    socket.join(userId);
-    console.log(`User ${userId} joined room`);
+    if (userId) {
+      socket.join(userId.toString());
+      console.log(`User ${userId} joined room`);
+    }
   });
 
   socket.on("disconnect", () => {
@@ -42,10 +43,9 @@ io.on("connection", (socket) => {
   });
 });
 
-// ექსპორტი კონტროლერისთვის
-export { io };
+export { io }; // ეს უნდა იყოს ბოლოში, რომ io ინიციალიზებული დახვდეს
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

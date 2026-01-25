@@ -144,14 +144,25 @@ export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
     const { receiverId, content } = req.body;
+
+    if (!content || !receiverId) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
     const newMessage = await pool.query(
       "INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3) RETURNING *",
       [senderId, receiverId, content],
     );
+
     const messageData = newMessage.rows[0];
+
+    // ვაგზავნით რეალურ დროში ადრესატთან და ჩემთან (სხვა დევაისებისთვის)
     io.to(receiverId.toString()).emit("new_message", messageData);
+    io.to(senderId.toString()).emit("new_message", messageData);
+
     res.json(messageData);
   } catch (err) {
-    res.status(500).json({ error: "Send error" });
+    console.error("SEND MESSAGE ERROR:", err);
+    res.status(500).json({ error: "მესიჯი ვერ გაიგზავნა" });
   }
 };
