@@ -148,17 +148,32 @@ export const getChatMessages = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
-    const { receiverId, content } = req.body; // ფრონტენდიდან მოდის content
+    const { receiverId, content } = req.body;
 
-    // ბაზაში ვწერთ 'text' სვეტში
+    // 1. ვპოულობთ match_id-ს ამ ორ მომხმარებელს შორის
+    const matchResult = await pool.query(
+      `SELECT id FROM matches 
+       WHERE (user1_id = $1 AND user2_id = $2) 
+          OR (user1_id = $2 AND user2_id = $1) 
+       LIMIT 1`,
+      [senderId, receiverId],
+    );
+
+    if (matchResult.rows.length === 0) {
+      return res.status(403).json({ error: "მესიჯის გაგზავნა შესაძლებელია მხოლოდ მატჩის შემდეგ" });
+    }
+
+    const matchId = matchResult.rows[0].id;
+
+    // 2. ჩაწერა match_id-სთან ერთად
     const newMessage = await pool.query(
-      "INSERT INTO messages (sender_id, receiver_id, text) VALUES ($1, $2, $3) RETURNING *",
-      [senderId, receiverId, content],
+      "INSERT INTO messages (match_id, sender_id, receiver_id, text) VALUES ($1, $2, $3, $4) RETURNING *",
+      [matchId, senderId, receiverId, content],
     );
 
     const messageData = newMessage.rows[0];
 
-    // Socket-ით ვაგზავნით ყველასთან
+    // Socket-ით გაგზავნა
     io.to(receiverId.toString()).emit("new_message", messageData);
     io.to(senderId.toString()).emit("new_message", messageData);
 
