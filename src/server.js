@@ -23,8 +23,8 @@ app.use(cors());
 app.use(express.json());
 
 // ვამაგრებთ როუტებს პირდაპირ /profile-ზე
-app.use("/api/profile", profileRoutes);
-app.use("/api/auth", authRoutes); // <--- ეს აუცილებელია ლოგინისთვის!
+app.use("/profile", profileRoutes);
+app.use("/auth", authRoutes); // <--- ეს აუცილებელია ლოგინისთვის!
 
 // Socket.io ლოგიკა
 io.on("connection", (socket) => {
