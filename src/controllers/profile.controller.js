@@ -115,10 +115,16 @@ export const getMatches = async (req, res) => {
         (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo,
         (SELECT text FROM messages 
          WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
-         ORDER BY created_at DESC LIMIT 1) as last_message
+         ORDER BY created_at DESC LIMIT 1) as last_message_text,
+        (SELECT created_at FROM messages 
+         WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
+         ORDER BY created_at DESC LIMIT 1) as last_message_at,
+        (SELECT COUNT(*) FROM messages 
+         WHERE sender_id = u.id AND receiver_id = $1 AND is_read = FALSE) as unread_count
       FROM users u
       JOIN matches m ON (u.id = m.user1_id OR u.id = m.user2_id)
-      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1`,
+      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1
+      ORDER BY last_message_at DESC NULLS LAST`, // ვასორტირებთ დროის მიხედვით
       [userId],
     );
     res.json(matchesResult.rows);
@@ -183,5 +189,22 @@ export const sendMessage = async (req, res) => {
   } catch (err) {
     console.error("SEND MESSAGE ERROR:", err);
     res.status(500).json({ error: "ბაზაში ჩაწერა ვერ მოხერხდა" });
+  }
+};
+
+export const markAsRead = async (req, res) => {
+  try {
+    const userId = req.user.id; // ჩემი ID
+    const { partnerId } = req.params; // ვისგანაც მოვიდა მესიჯები
+
+    await pool.query(
+      "UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE",
+      [partnerId, userId],
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("MARK AS READ ERROR:", err);
+    res.status(500).json({ error: "ვერ მოინიშნა წაკითხულად" });
   }
 };

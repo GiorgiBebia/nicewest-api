@@ -7,6 +7,7 @@ import {
   getMatches,
   getChatMessages,
   sendMessage,
+  markAsRead,
 } from "../controllers/profile.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 
@@ -28,5 +29,9 @@ router.get("/matches", authMiddleware, getMatches);
 // ჩატის როუტები
 router.get("/messages/:partnerId", authMiddleware, getChatMessages);
 router.post("/messages/send", authMiddleware, sendMessage);
+
+router.get("/matches", authMiddleware, getMatches);
+
+router.put("/messages/read/:partnerId", authMiddleware, markAsRead);
 
 export default router;
