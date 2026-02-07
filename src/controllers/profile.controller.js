@@ -16,11 +16,13 @@ export const updateLocation = async (req, res) => {
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, bio, gender, city, age, photos, search_radius } = req.body;
+    const { full_name, bio, gender, city, age, photos, search_radius, min_age, max_age } = req.body;
 
     await pool.query(
-      `UPDATE users SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6 WHERE id=$7`,
-      [full_name, bio, gender, city, age, search_radius || 50, userId],
+      `UPDATE users 
+       SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6, min_age=$7, max_age=$8
+       WHERE id=$9`,
+      [full_name, bio, gender, city, age, search_radius || 50, min_age || 18, max_age || 100, userId],
     );
 
     if (photos && Array.isArray(photos)) {
@@ -37,7 +39,6 @@ export const updateProfile = async (req, res) => {
     }
     res.json({ success: true, message: "პროფილი განახლდა" });
   } catch (err) {
-    console.error("UPDATE ERROR:", err);
     res.status(500).json({ error: "შეცდომა განახლებისას" });
   }
 };
@@ -62,33 +63,32 @@ export const getMe = async (req, res) => {
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    // ვიღებთ ჩემს ლოკაციას და ფილტრს
-    const meResult = await pool.query("SELECT latitude, longitude, search_radius FROM users WHERE id = $1", [userId]);
+    const meResult = await pool.query(
+      "SELECT latitude, longitude, search_radius, min_age, max_age FROM users WHERE id = $1",
+      [userId],
+    );
     const me = meResult.rows[0];
 
-    if (!me.latitude || !me.longitude) {
-      return res.json([]); // თუ ჩემი ლოკაცია არაა, ვერავის ვნახავ
-    }
+    if (!me.latitude || !me.longitude) return res.json([]);
 
     const discoveryResult = await pool.query(
       `SELECT u.id, u.full_name, u.age, u.city, u.bio,
-                (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) AS distance,
-                COALESCE(JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
-                FILTER (WHERE p.id IS NOT NULL), '[]') AS photos
-            FROM users u
-            LEFT JOIN photos p ON u.id = p.user_id
-            WHERE u.id != $1 
-            AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
-            AND u.latitude IS NOT NULL 
-            AND (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) <= $4
-            GROUP BY u.id 
-            ORDER BY distance ASC LIMIT 30`,
-      [userId, me.latitude, me.longitude, me.search_radius],
+          (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) AS distance,
+          COALESCE(JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
+          FILTER (WHERE p.id IS NOT NULL), '[]') AS photos
+      FROM users u
+      LEFT JOIN photos p ON u.id = p.user_id
+      WHERE u.id != $1 
+      AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+      AND u.age BETWEEN $5 AND $6
+      AND u.latitude IS NOT NULL 
+      AND (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) <= $4
+      GROUP BY u.id 
+      ORDER BY distance ASC LIMIT 30`,
+      [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age],
     );
     res.json(discoveryResult.rows);
   } catch (err) {
-    console.error("Discovery error:", err);
     res.status(500).json({ error: "Discovery error" });
   }
 };
