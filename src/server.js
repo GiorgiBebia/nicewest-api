@@ -17,7 +17,6 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
-  // Render-ისთვის აუცილებელი პარამეტრები
   transports: ["polling", "websocket"],
 });
 
@@ -29,21 +28,19 @@ app.use("/auth", authRoutes);
 app.use("/likes", likeRoutes);
 
 io.on("connection", (socket) => {
-  console.log("Connected:", socket.id);
-
   socket.on("join", (userId) => {
     if (userId) {
       socket.join(userId.toString());
-      console.log(`User ${userId} joined room`);
+      console.log(`User ${userId} joined their private room`);
     }
   });
 
   socket.on("disconnect", () => {
-    console.log("User disconnected");
+    console.log("A user disconnected");
   });
 });
 
-export { io }; // ეს უნდა იყოს ბოლოში, რომ io ინიციალიზებული დახვდეს
+export { io };
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

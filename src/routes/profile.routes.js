@@ -16,7 +16,7 @@ const router = express.Router();
 
 router.get("/me", authMiddleware, getMe);
 router.post("/update", authMiddleware, updateProfile);
-router.post("/location", authMiddleware, updateLocation); // ახალი
+router.post("/location", authMiddleware, updateLocation);
 router.get("/discovery", authMiddleware, getDiscovery);
 router.post("/like", authMiddleware, addLike);
 router.get("/matches", authMiddleware, getMatches);

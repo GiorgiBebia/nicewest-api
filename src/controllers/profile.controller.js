@@ -14,32 +14,67 @@ export const updateLocation = async (req, res) => {
 };
 
 export const updateProfile = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user.id;
-    const { full_name, bio, gender, city, age, photos, search_radius, min_age, max_age } = req.body;
+    const {
+      full_name,
+      bio,
+      gender,
+      looking_for, // ახალი ველი
+      city,
+      age,
+      photos,
+      search_radius,
+      min_age,
+      max_age,
+      interests,
+    } = req.body;
 
-    await pool.query(
+    await client.query("BEGIN");
+
+    // ძირითადი ინფორმაციის განახლება (დამატებულია looking_for=$10)
+    await client.query(
       `UPDATE users 
-       SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6, min_age=$7, max_age=$8
-       WHERE id=$9`,
-      [full_name, bio, gender, city, age, search_radius || 50, min_age || 18, max_age || 100, userId],
+       SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6, min_age=$7, max_age=$8, interests=$9, looking_for=$10
+       WHERE id=$11`,
+      [
+        full_name,
+        bio,
+        gender,
+        city,
+        age,
+        search_radius || 50,
+        min_age || 18,
+        max_age || 100,
+        interests || [],
+        looking_for || "female", // default მნიშვნელობა
+        userId,
+      ],
     );
 
+    // ფოტოების განახლება
     if (photos && Array.isArray(photos)) {
-      await pool.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-      for (const photo of photos) {
+      await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
+      for (const [index, photo] of photos.entries()) {
         if (photo && photo.image_url) {
-          await pool.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
+          await client.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
             userId,
             photo.image_url,
-            photo.position || 0,
+            photo.position ?? index,
           ]);
         }
       }
     }
-    res.json({ success: true, message: "პროფილი განახლდა" });
+
+    await client.query("COMMIT");
+    res.json({ success: true, message: "პროფილი წარმატებით განახლდა" });
   } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Update error:", err);
     res.status(500).json({ error: "შეცდომა განახლებისას" });
+  } finally {
+    client.release();
   }
 };
 
@@ -47,7 +82,7 @@ export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
     const userResult = await pool.query(
-      "SELECT id, username, email, full_name, bio, gender, city, age, search_radius, latitude, longitude FROM users WHERE id=$1",
+      "SELECT id, username, email, full_name, bio, gender, city, age, search_radius, min_age, max_age, interests, latitude, longitude FROM users WHERE id=$1",
       [userId],
     );
     const photosResult = await pool.query(
@@ -63,8 +98,9 @@ export const getMe = async (req, res) => {
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
+    // წამოვიღოთ ინფორმაცია იმაზე, თუ ვის ეძებს მომხმარებელი (looking_for)
     const meResult = await pool.query(
-      "SELECT latitude, longitude, search_radius, min_age, max_age FROM users WHERE id = $1",
+      "SELECT latitude, longitude, search_radius, min_age, max_age, gender, looking_for FROM users WHERE id = $1",
       [userId],
     );
     const me = meResult.rows[0];
@@ -72,29 +108,32 @@ export const getDiscovery = async (req, res) => {
     if (!me.latitude || !me.longitude) return res.json([]);
 
     const discoveryResult = await pool.query(
-      `SELECT u.id, u.full_name, u.age, u.city, u.bio, u.latitude, u.longitude, -- დავამატე ეს ველები
+      `SELECT u.id, u.full_name, u.age, u.city, u.bio, u.interests,
           (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) AS distance,
-          COALESCE(JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
-          FILTER (WHERE p.id IS NOT NULL), '[]') AS photos
+          COALESCE(
+            JSON_AGG(
+              JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) 
+              ORDER BY p.position ASC
+            ) FILTER (WHERE p.id IS NOT NULL), '[]'
+          ) AS photos
       FROM users u
       LEFT JOIN photos p ON u.id = p.user_id
       WHERE u.id != $1 
       AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
       AND u.age BETWEEN $5 AND $6
+      AND u.gender = $7  -- ვამატებთ სქესის ფილტრს
       AND u.latitude IS NOT NULL 
       AND (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) <= $4
       GROUP BY u.id 
-      ORDER BY distance ASC LIMIT 10`,
-      [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age],
+      ORDER BY distance ASC LIMIT 20`,
+      [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age, me.looking_for],
     );
     res.json(discoveryResult.rows);
   } catch (err) {
-    console.error("Discovery error:", err); // დაამატე ლოგი შეცდომის სანახავად
-    res.status(500).json({ error: "Discovery error" });
+    console.error("Discovery error:", err);
+    res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
-
-// დანარჩენი ფუნქციები (addLike, getMatches, getChatMessages, sendMessage, markAsRead) იგივე დატოვე...
 export const addLike = async (req, res) => {
   const { targetUserId } = req.body;
   const myId = req.user.id;
@@ -103,11 +142,13 @@ export const addLike = async (req, res) => {
       myId,
       targetUserId,
     ]);
-    let isMatch = false;
+
     const reverseLike = await pool.query("SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [
       targetUserId,
       myId,
     ]);
+
+    let isMatch = false;
     if (reverseLike.rows.length > 0) {
       isMatch = true;
       const [p1, p2] = [myId, targetUserId].sort();
@@ -123,12 +164,14 @@ export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
     const matchesResult = await pool.query(
-      `SELECT u.id, u.full_name, (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo,
+      `SELECT u.id, u.full_name, 
+      (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo,
       (SELECT text FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) as last_message_text,
       (SELECT created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) as last_message_at,
       (SELECT COUNT(*) FROM messages WHERE sender_id = u.id AND receiver_id = $1 AND is_read = FALSE) as unread_count
       FROM users u JOIN matches m ON (u.id = m.user1_id OR u.id = m.user2_id)
-      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1 ORDER BY last_message_at DESC NULLS LAST`,
+      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1 
+      ORDER BY last_message_at DESC NULLS LAST`,
       [userId],
     );
     res.json(matchesResult.rows);
@@ -154,20 +197,25 @@ export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
     const { receiverId, content } = req.body;
+
     const matchResult = await pool.query(
       `SELECT id FROM matches WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $2 AND user2_id = $1) LIMIT 1`,
       [senderId, receiverId],
     );
-    if (matchResult.rows.length === 0) return res.status(403).json({ error: "No match" });
+
+    if (matchResult.rows.length === 0) return res.status(403).json({ error: "თქვენ არ გაქვთ Match ამ მომხმარებელთან" });
+
     const newMessage = await pool.query(
       "INSERT INTO messages (match_id, sender_id, receiver_id, text) VALUES ($1, $2, $3, $4) RETURNING *",
       [matchResult.rows[0].id, senderId, receiverId, content],
     );
+
     io.to(receiverId.toString()).emit("new_message", newMessage.rows[0]);
     io.to(senderId.toString()).emit("new_message", newMessage.rows[0]);
+
     res.json(newMessage.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: "error" });
+    res.status(500).json({ error: "შეტყობინების გაგზავნა ვერ მოხერხდა" });
   }
 };
 
