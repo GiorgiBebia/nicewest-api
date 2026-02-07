@@ -84,7 +84,7 @@ export const getDiscovery = async (req, res) => {
       AND u.latitude IS NOT NULL 
       AND (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) <= $4
       GROUP BY u.id 
-      ORDER BY distance ASC LIMIT 30`,
+      ORDER BY distance ASC LIMIT 10`,
       [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age],
     );
     res.json(discoveryResult.rows);
