@@ -72,7 +72,7 @@ export const getDiscovery = async (req, res) => {
     if (!me.latitude || !me.longitude) return res.json([]);
 
     const discoveryResult = await pool.query(
-      `SELECT u.id, u.full_name, u.age, u.city, u.bio,
+      `SELECT u.id, u.full_name, u.age, u.city, u.bio, u.latitude, u.longitude, -- დავამატე ეს ველები
           (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) AS distance,
           COALESCE(JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
           FILTER (WHERE p.id IS NOT NULL), '[]') AS photos
@@ -89,6 +89,7 @@ export const getDiscovery = async (req, res) => {
     );
     res.json(discoveryResult.rows);
   } catch (err) {
+    console.error("Discovery error:", err); // დაამატე ლოგი შეცდომის სანახავად
     res.status(500).json({ error: "Discovery error" });
   }
 };
