@@ -164,19 +164,36 @@ export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
     const matchesResult = await pool.query(
-      `SELECT u.id, u.full_name, 
-      (SELECT image_url FROM photos WHERE user_id = u.id ORDER BY position ASC LIMIT 1) as main_photo,
-      (SELECT text FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) as last_message_text,
-      (SELECT created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) as last_message_at,
-      (SELECT COUNT(*) FROM messages WHERE sender_id = u.id AND receiver_id = $1 AND is_read = FALSE) as unread_count
-      FROM users u JOIN matches m ON (u.id = m.user1_id OR u.id = m.user2_id)
-      WHERE (m.user1_id = $1 OR m.user2_id = $1) AND u.id != $1 
+      `SELECT 
+        u.id, 
+        u.full_name,
+        p.image_url as main_photo,
+        msg.text as last_message_text,
+        msg.created_at as last_message_at,
+        COALESCE(unread.count, 0) as unread_count
+      FROM matches m
+      JOIN users u ON (u.id = CASE WHEN m.user1_id = $1 THEN m.user2_id ELSE m.user1_id END)
+      LEFT JOIN photos p ON p.user_id = u.id AND p.position = 0
+      LEFT JOIN LATERAL (
+        SELECT text, created_at 
+        FROM messages 
+        WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
+        ORDER BY created_at DESC LIMIT 1
+      ) msg ON true
+      LEFT JOIN (
+        SELECT sender_id, COUNT(*) as count 
+        FROM messages 
+        WHERE receiver_id = $1 AND is_read = FALSE 
+        GROUP BY sender_id
+      ) unread ON unread.sender_id = u.id
+      WHERE m.user1_id = $1 OR m.user2_id = $1
       ORDER BY last_message_at DESC NULLS LAST`,
       [userId],
     );
     res.json(matchesResult.rows);
   } catch (err) {
-    res.status(500).json({ error: "error" });
+    console.error("GetMatches error:", err);
+    res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
 
