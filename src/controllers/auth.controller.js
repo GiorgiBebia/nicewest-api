@@ -6,9 +6,11 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "default_refresh_secret_change_me_in_production";
 
-console.log();
+if (!JWT_SECRET) {
+  console.error("კრიტიკული შეცდომა: JWT_SECRET არ არის განსაზღვრული!");
+}
 
 if (!JWT_SECRET) throw new Error("JWT_SECRET არ არის განსაზღვრული");
 if (!JWT_REFRESH_SECRET) console.warn("გაფრთხილება: JWT_REFRESH_SECRET არ არის განსაზღვრული .env ფაილში");
@@ -17,6 +19,9 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // დამხმარე ფუნქცია ტოკენების გენერაციისთვის
 const generateTokens = (user) => {
+  const accessSecret = JWT_SECRET || "temporary_access_secret";
+  const refreshSecret = JWT_REFRESH_SECRET || "temporary_refresh_secret";
+
   const accessToken = jwt.sign(
     { id: user.id, username: user.username },
     JWT_SECRET,
