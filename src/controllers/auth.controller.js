@@ -25,7 +25,7 @@ const generateTokens = (user) => {
   const accessToken = jwt.sign(
     { id: user.id, username: user.username },
     JWT_SECRET,
-    { expiresIn: "15m" }, // Access ტოკენი მოქმედებს 15 წუთი
+    { expiresIn: "2m" }, // Access ტოკენი მოქმედებს 15 წუთი
   );
 
   const refreshToken = jwt.sign(
