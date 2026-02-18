@@ -83,3 +83,44 @@ export const login = async (req, res) => {
     res.status(500).json({ message: "სერვერის შეცდომა ავტორიზაციისას" });
   }
 };
+
+const generateTokens = (user) => {
+  const accessToken = jwt.sign(
+    { id: user.id, username: user.username },
+    process.env.JWT_SECRET,
+    { expiresIn: "15m" }, // მოკლევადიანი
+  );
+
+  const refreshToken = jwt.sign(
+    { id: user.id },
+    process.env.JWT_REFRESH_SECRET, // ცალკე სეკრეტი რეფრეშისთვის
+    { expiresIn: "30d" }, // გრძელვადიანი
+  );
+
+  return { accessToken, refreshToken };
+};
+
+// ენდფოინთი ტოკენის განახლებისთვის
+export const refresh = async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) return res.status(401).json({ message: "No Refresh Token" });
+
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+
+    // შემოწმება ბაზაში, არსებობს თუ არა ეს რეფრეშ ტოკენი
+    const dbToken = await db.query("SELECT * FROM user_refresh_tokens WHERE token = $1 AND user_id = $2", [
+      refreshToken,
+      decoded.id,
+    ]);
+
+    if (dbToken.rows.length === 0) return res.status(403).json({ message: "Invalid Refresh Token" });
+
+    // ახალი Access Token-ის გენერაცია
+    const newAccessToken = jwt.sign({ id: decoded.id }, process.env.JWT_SECRET, { expiresIn: "15m" });
+
+    res.json({ accessToken: newAccessToken });
+  } catch (e) {
+    res.status(403).json({ message: "Expired Refresh Token" });
+  }
+};
