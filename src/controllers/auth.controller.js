@@ -4,10 +4,31 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 
 dotenv.config();
+
 const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+
 if (!JWT_SECRET) throw new Error("JWT_SECRET არ არის განსაზღვრული");
+if (!JWT_REFRESH_SECRET) console.warn("გაფრთხილება: JWT_REFRESH_SECRET არ არის განსაზღვრული .env ფაილში");
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// დამხმარე ფუნქცია ტოკენების გენერაციისთვის
+const generateTokens = (user) => {
+  const accessToken = jwt.sign(
+    { id: user.id, username: user.username },
+    JWT_SECRET,
+    { expiresIn: "15m" }, // Access ტოკენი მოქმედებს 15 წუთი
+  );
+
+  const refreshToken = jwt.sign(
+    { id: user.id },
+    JWT_REFRESH_SECRET,
+    { expiresIn: "30d" }, // Refresh ტოკენი მოქმედებს 30 დღე
+  );
+
+  return { accessToken, refreshToken };
+};
 
 export const register = async (req, res) => {
   try {
@@ -24,7 +45,6 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
-    // დეტალური შემოწმება: რა არის დაკავებული
     const existing = await pool.query(
       "SELECT username, email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)",
       [usernameTrim, emailTrim],
@@ -72,10 +92,20 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: "პაროლი არასწორია" });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "7d" });
+    // ტოკენების გენერაცია
+    const { accessToken, refreshToken } = generateTokens(user);
+
+    // ძველი რეფრეშ ტოკენების წაშლა და ახალის შენახვა ბაზაში
+    await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [user.id]);
+    await pool.query("INSERT INTO user_refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)", [
+      user.id,
+      refreshToken,
+      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    ]);
 
     res.json({
-      token,
+      token: accessToken, // ფრონტენდი ამას ელოდება როგორც 'token'
+      refreshToken: refreshToken,
       user: { id: user.id, username: user.username, email: user.email },
     });
   } catch (err) {
@@ -84,43 +114,35 @@ export const login = async (req, res) => {
   }
 };
 
-const generateTokens = (user) => {
-  const accessToken = jwt.sign(
-    { id: user.id, username: user.username },
-    process.env.JWT_SECRET,
-    { expiresIn: "15m" }, // მოკლევადიანი
-  );
-
-  const refreshToken = jwt.sign(
-    { id: user.id },
-    process.env.JWT_REFRESH_SECRET, // ცალკე სეკრეტი რეფრეშისთვის
-    { expiresIn: "30d" }, // გრძელვადიანი
-  );
-
-  return { accessToken, refreshToken };
-};
-
-// ენდფოინთი ტოკენის განახლებისთვის
 export const refresh = async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) return res.status(401).json({ message: "No Refresh Token" });
-
   try {
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const { refreshToken } = req.body;
+    if (!refreshToken) return res.status(401).json({ message: "No Refresh Token" });
 
-    // შემოწმება ბაზაში, არსებობს თუ არა ეს რეფრეშ ტოკენი
-    const dbToken = await db.query("SELECT * FROM user_refresh_tokens WHERE token = $1 AND user_id = $2", [
+    const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
+
+    // შემოწმება ბაზაში
+    const dbTokenResult = await pool.query("SELECT * FROM user_refresh_tokens WHERE token = $1 AND user_id = $2", [
       refreshToken,
       decoded.id,
     ]);
 
-    if (dbToken.rows.length === 0) return res.status(403).json({ message: "Invalid Refresh Token" });
+    if (dbTokenResult.rows.length === 0) {
+      return res.status(403).json({ message: "Invalid Refresh Token" });
+    }
 
-    // ახალი Access Token-ის გენერაცია
-    const newAccessToken = jwt.sign({ id: decoded.id }, process.env.JWT_SECRET, { expiresIn: "15m" });
+    // იუზერის მონაცემების ამოღება ახალი Access Token-ისთვის
+    const userResult = await pool.query("SELECT id, username FROM users WHERE id = $1", [decoded.id]);
+    const user = userResult.rows[0];
+
+    if (!user) return res.status(403).json({ message: "User not found" });
+
+    // მხოლოდ Access Token-ის განახლება
+    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
 
     res.json({ accessToken: newAccessToken });
   } catch (e) {
-    res.status(403).json({ message: "Expired Refresh Token" });
+    console.error("REFRESH ERROR:", e);
+    res.status(403).json({ message: "Expired or Invalid Refresh Token" });
   }
 };
