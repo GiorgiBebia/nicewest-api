@@ -8,6 +8,8 @@ dotenv.config();
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
+console.log();
+
 if (!JWT_SECRET) throw new Error("JWT_SECRET არ არის განსაზღვრული");
 if (!JWT_REFRESH_SECRET) console.warn("გაფრთხილება: JWT_REFRESH_SECRET არ არის განსაზღვრული .env ფაილში");
 
