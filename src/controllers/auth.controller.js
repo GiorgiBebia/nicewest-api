@@ -16,8 +16,8 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // დამხმარე ფუნქცია ტოკენების გენერაციისთვის
 const generateTokens = (user) => {
-  // ტესტირებისთვის დაყენებულია 2 წუთი (შემდეგ შეცვალე '1h'-ზე)
-  const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "2m" });
+  // accessToken ვადის გარეშე - ყოველთის მოქმედი იქნება
+  const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
 
   const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: "30d" });
 
@@ -127,8 +127,8 @@ export const refresh = async (req, res) => {
 
     if (!user) return res.status(403).json({ message: "User not found" });
 
-    // აქაც 2 წუთი, რომ ტესტირება სწორად წავიდეს
-    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "2m" });
+    // ახალი accessToken ვადის გარეშე - ყოველთის მოქმედი იქნება
+    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
 
     res.json({ accessToken: newAccessToken });
   } catch (e) {
