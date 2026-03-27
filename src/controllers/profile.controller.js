@@ -17,23 +17,12 @@ export const updateProfile = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = req.user.id;
-    const {
-      full_name,
-      bio,
-      gender,
-      looking_for, // ახალი ველი
-      city,
-      age,
-      photos,
-      search_radius,
-      min_age,
-      max_age,
-      interests,
-    } = req.body;
+    const { full_name, bio, gender, looking_for, city, age, photos, search_radius, min_age, max_age, interests } =
+      req.body;
 
     await client.query("BEGIN");
 
-    // ძირითადი ინფორმაციის განახლება (დამატებულია looking_for=$10)
+    // 1. ძირითადი ინფორმაციის განახლება
     await client.query(
       `UPDATE users 
        SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6, min_age=$7, max_age=$8, interests=$9, looking_for=$10
@@ -48,22 +37,27 @@ export const updateProfile = async (req, res) => {
         min_age || 18,
         max_age || 100,
         interests || [],
-        looking_for || "female", // default მნიშვნელობა
+        looking_for || "female",
         userId,
       ],
     );
 
-    // ფოტოების განახლება
-    if (photos && Array.isArray(photos)) {
+    // 2. ფოტოების ოპტიმიზირებული განახლება (Bulk Insert)
+    if (photos && Array.isArray(photos) && photos.length > 0) {
       await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-      for (const [index, photo] of photos.entries()) {
-        if (photo && photo.image_url) {
-          await client.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
-            userId,
-            photo.image_url,
-            photo.position ?? index,
-          ]);
-        }
+
+      const validPhotos = photos.filter((p) => p && p.image_url);
+      if (validPhotos.length > 0) {
+        const values = [];
+        const placeholders = validPhotos
+          .map((p, i) => {
+            const offset = i * 3;
+            values.push(userId, p.image_url, p.position ?? i);
+            return `($${offset + 1}, $${offset + 2}, $${offset + 3})`;
+          })
+          .join(", ");
+
+        await client.query(`INSERT INTO photos (user_id, image_url, position) VALUES ${placeholders}`, values);
       }
     }
 
@@ -98,34 +92,36 @@ export const getMe = async (req, res) => {
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
-    // წამოვიღოთ ინფორმაცია იმაზე, თუ ვის ეძებს მომხმარებელი (looking_for)
     const meResult = await pool.query(
-      "SELECT latitude, longitude, search_radius, min_age, max_age, gender, looking_for FROM users WHERE id = $1",
+      "SELECT latitude, longitude, search_radius, min_age, max_age, looking_for FROM users WHERE id = $1",
       [userId],
     );
     const me = meResult.rows[0];
 
-    if (!me.latitude || !me.longitude) return res.json([]);
+    if (!me || !me.latitude || !me.longitude) return res.json([]);
 
     const discoveryResult = await pool.query(
-      `SELECT u.id, u.full_name, u.age, u.city, u.bio, u.interests,
-          (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) AS distance,
-          COALESCE(
-            JSON_AGG(
-              JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) 
-              ORDER BY p.position ASC
-            ) FILTER (WHERE p.id IS NOT NULL), '[]'
-          ) AS photos
-      FROM users u
-      LEFT JOIN photos p ON u.id = p.user_id
-      WHERE u.id != $1 
-      AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
-      AND u.age BETWEEN $5 AND $6
-      AND u.gender = $7  -- ვამატებთ სქესის ფილტრს
-      AND u.latitude IS NOT NULL 
-      AND (6371 * acos(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)))) <= $4
-      GROUP BY u.id 
-      ORDER BY distance ASC LIMIT 20`,
+      `WITH filtered_users AS (
+          SELECT u.id, u.full_name, u.age, u.city, u.bio, u.interests,
+            (6371 * acos(clamp(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)), -1, 1))) AS distance
+          FROM users u
+          WHERE u.id != $1 
+          AND u.age BETWEEN $5 AND $6
+          AND u.gender = $7
+          AND u.latitude IS NOT NULL
+          AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+      )
+      SELECT f.*, 
+             COALESCE(
+               JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
+               FILTER (WHERE p.id IS NOT NULL), '[]'
+             ) AS photos
+      FROM filtered_users f
+      LEFT JOIN photos p ON f.id = p.user_id
+      WHERE f.distance <= $4
+      GROUP BY f.id, f.full_name, f.age, f.city, f.bio, f.interests, f.distance
+      ORDER BY f.distance ASC 
+      LIMIT 20`,
       [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age, me.looking_for],
     );
     res.json(discoveryResult.rows);
@@ -134,6 +130,7 @@ export const getDiscovery = async (req, res) => {
     res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
+
 export const addLike = async (req, res) => {
   const { targetUserId } = req.body;
   const myId = req.user.id;
@@ -142,12 +139,10 @@ export const addLike = async (req, res) => {
       myId,
       targetUserId,
     ]);
-
     const reverseLike = await pool.query("SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [
       targetUserId,
       myId,
     ]);
-
     let isMatch = false;
     if (reverseLike.rows.length > 0) {
       isMatch = true;
@@ -164,35 +159,18 @@ export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
     const matchesResult = await pool.query(
-      `SELECT 
-        u.id, 
-        u.full_name,
-        p.image_url as main_photo,
-        msg.text as last_message_text,
-        msg.created_at as last_message_at,
-        COALESCE(unread.count, 0) as unread_count
+      `SELECT u.id, u.full_name, p.image_url as main_photo, msg.text as last_message_text, msg.created_at as last_message_at, COALESCE(unread.count, 0) as unread_count
       FROM matches m
       JOIN users u ON (u.id = CASE WHEN m.user1_id = $1 THEN m.user2_id ELSE m.user1_id END)
       LEFT JOIN photos p ON p.user_id = u.id AND p.position = 0
-      LEFT JOIN LATERAL (
-        SELECT text, created_at 
-        FROM messages 
-        WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
-        ORDER BY created_at DESC LIMIT 1
-      ) msg ON true
-      LEFT JOIN (
-        SELECT sender_id, COUNT(*) as count 
-        FROM messages 
-        WHERE receiver_id = $1 AND is_read = FALSE 
-        GROUP BY sender_id
-      ) unread ON unread.sender_id = u.id
+      LEFT JOIN LATERAL (SELECT text, created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) msg ON true
+      LEFT JOIN (SELECT sender_id, COUNT(*) as count FROM messages WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id) unread ON unread.sender_id = u.id
       WHERE m.user1_id = $1 OR m.user2_id = $1
       ORDER BY last_message_at DESC NULLS LAST`,
       [userId],
     );
     res.json(matchesResult.rows);
   } catch (err) {
-    console.error("GetMatches error:", err);
     res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
