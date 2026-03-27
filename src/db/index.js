@@ -1,11 +1,10 @@
-import pkg from "pkg";
+import pkg from "pg";
+const { Pool } = pkg;
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const { Pool } = pkg;
-
-// ვიყენებთ ან მთლიან CONNECTION_STRING-ს, ან ცალკეულ პარამეტრებს
+// კონფიგურაციის არჩევა: ან DATABASE_URL, ან ცალკეული პარამეტრები
 const poolConfig = process.env.DATABASE_URL
   ? { connectionString: process.env.DATABASE_URL }
   : {
@@ -21,13 +20,11 @@ export const pool = new Pool({
   ssl: {
     rejectUnauthorized: false,
   },
-  // --- ოპტიმიზაციის პარამეტრები ---
-  max: 20, // მაქსიმუმ რამდენი კავშირი იყოს ღია ერთდროულად
-  idleTimeoutMillis: 30000, // 30 წამი შეინახოს კავშირი, სანამ დახურავს უმოქმედობის გამო
-  connectionTimeoutMillis: 5000, // 5 წამი ეცადოს დაკავშირებას, სანამ ერორს დააბრუნებს
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 
-// კავშირის შემოწმება ჩართვისას
 pool
   .query("SELECT 1")
   .then(() => console.log("✅ DB Connected & Optimized"))
@@ -35,7 +32,6 @@ pool
     console.error("❌ DB Connection Error:", err.message);
   });
 
-// შეცდომების დამჭერი "მძინარე" კლიენტებისთვის
 pool.on("error", (err) => {
   console.error("Unexpected error on idle client", err);
 });
