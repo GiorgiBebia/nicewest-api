@@ -103,7 +103,11 @@ export const getDiscovery = async (req, res) => {
     const discoveryResult = await pool.query(
       `WITH filtered_users AS (
           SELECT u.id, u.full_name, u.age, u.city, u.bio, u.interests,
-            (6371 * acos(clamp(cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude)), -1, 1))) AS distance
+            (6371 * acos(
+                LEAST(1, GREATEST(-1, 
+                  cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude))
+                ))
+            )) AS distance
           FROM users u
           WHERE u.id != $1 
           AND u.age BETWEEN $5 AND $6
