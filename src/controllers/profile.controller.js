@@ -76,19 +76,11 @@ export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 1. მოგვაქვს იუზერის მონაცემები
     const userResult = await pool.query(
       "SELECT id, username, email, full_name, bio, gender, city, age, search_radius, min_age, max_age, interests, latitude, longitude FROM users WHERE id=$1",
       [userId],
     );
 
-    // თუ იუზერი ბაზაში არ არის
-    if (userResult.rows.length === 0) {
-      console.log(`⚠️ User ${userId} not found in database`);
-      return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
-    }
-
-    // 2. მოგვაქვს ფოტოები
     const photosResult = await pool.query(
       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
@@ -97,7 +89,6 @@ export const getMe = async (req, res) => {
     const user = userResult.rows[0];
     const photos = photosResult.rows;
 
-    // 3. დიაგნოსტიკა (გამოჩნდება შენი ბექენდის ტერმინალში)
     console.log("-----------------------------------------");
     console.log(`🔍 Profile Check for: ${user.username} (ID: ${userId})`);
     console.log("📍 Full Name:", user.full_name ? "✅" : "❌");
@@ -107,7 +98,7 @@ export const getMe = async (req, res) => {
     console.log("📍 Bio Length:", user.bio?.trim().length || 0, user.bio?.trim().length >= 5 ? "✅" : "❌");
     console.log("📍 Photos Count:", photos.length, photos.length > 0 ? "✅" : "❌");
 
-    // 4. ვალიდაციის საბოლოო გამოთვლა
+    // ვალიდაციის ლოგიკა
     const isComplete = !!(
       user.full_name &&
       user.age &&
@@ -118,18 +109,14 @@ export const getMe = async (req, res) => {
       photos.length > 0
     );
 
-    console.log("🚀 FINAL STATUS (is_complete):", isComplete);
-    console.log("-----------------------------------------");
-
-    // 5. პასუხის დაბრუნება
     res.json({
       ...user,
       photos,
       is_complete: isComplete,
     });
   } catch (err) {
-    console.error("❌ GET_ME ERROR:", err.message);
-    res.status(500).json({ error: "სერვერის შეცდომა მონაცემების წამოღებისას" });
+    console.error("GET_ME ERROR:", err);
+    res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
   }
 };
 
