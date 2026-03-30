@@ -114,6 +114,8 @@ export const getMe = async (req, res) => {
       photos,
       is_complete: isComplete,
     });
+
+    console.log("iscomplete:", isComplete);
   } catch (err) {
     console.error("GET_ME ERROR:", err);
     res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
