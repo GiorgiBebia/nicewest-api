@@ -75,16 +75,38 @@ export const updateProfile = async (req, res) => {
 export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
+
     const userResult = await pool.query(
       "SELECT id, username, email, full_name, bio, gender, city, age, search_radius, min_age, max_age, interests, latitude, longitude FROM users WHERE id=$1",
       [userId],
     );
+
     const photosResult = await pool.query(
       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
     );
-    res.json({ ...userResult.rows[0], photos: photosResult.rows });
+
+    const user = userResult.rows[0];
+    const photos = photosResult.rows;
+
+    // ვალიდაციის ლოგიკა
+    const isComplete = !!(
+      user.full_name &&
+      user.age &&
+      user.city &&
+      user.gender &&
+      user.bio &&
+      user.bio.trim().length >= 5 &&
+      photos.length > 0
+    );
+
+    res.json({
+      ...user,
+      photos,
+      is_complete: isComplete,
+    });
   } catch (err) {
+    console.error("GET_ME ERROR:", err);
     res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
   }
 };
