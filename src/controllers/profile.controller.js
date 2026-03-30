@@ -72,6 +72,56 @@ export const updateProfile = async (req, res) => {
   }
 };
 
+// export const getMe = async (req, res) => {
+//   try {
+//     const userId = req.user.id;
+
+//     const userResult = await pool.query(
+//       "SELECT id, username, email, full_name, bio, gender, city, age, search_radius, min_age, max_age, interests, latitude, longitude FROM users WHERE id=$1",
+//       [userId],
+//     );
+
+//     const photosResult = await pool.query(
+//       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
+//       [userId],
+//     );
+
+//     const user = userResult.rows[0];
+//     const photos = photosResult.rows;
+
+//     console.log("-----------------------------------------");
+//     console.log(`🔍 Profile Check for: ${user.username} (ID: ${userId})`);
+//     console.log("📍 Full Name:", user.full_name ? "✅" : "❌");
+//     console.log("📍 Age:", user.age ? "✅" : "❌");
+//     console.log("📍 City:", user.city ? "✅" : "❌");
+//     console.log("📍 Gender:", user.gender ? "✅" : "❌");
+//     console.log("📍 Bio Length:", user.bio?.trim().length || 0, user.bio?.trim().length >= 5 ? "✅" : "❌");
+//     console.log("📍 Photos Count:", photos.length, photos.length > 0 ? "✅" : "❌");
+
+//     // ვალიდაციის ლოგიკა
+//     const isComplete = !!(
+//       user.full_name &&
+//       user.age &&
+//       user.city &&
+//       user.gender &&
+//       user.bio &&
+//       user.bio.trim().length >= 5 &&
+//       photos.length > 0
+//     );
+
+//     res.json({
+//       ...user,
+//       photos,
+//       is_complete: isComplete, //აქ მინდა რომ დააბრუნოს iscomplete-ს ყველა ვალიდაცია ,რომ ვნახო ვებში გაშვებისას კონსოლში რას ვერ ხედავს
+//     });
+
+//     console.log("iscomplete:", isComplete);
+//   } catch (err) {
+//     console.error("GET_ME ERROR:", err);
+//     res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
+//   }
+// };
+
 export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -89,33 +139,26 @@ export const getMe = async (req, res) => {
     const user = userResult.rows[0];
     const photos = photosResult.rows;
 
-    console.log("-----------------------------------------");
-    console.log(`🔍 Profile Check for: ${user.username} (ID: ${userId})`);
-    console.log("📍 Full Name:", user.full_name ? "✅" : "❌");
-    console.log("📍 Age:", user.age ? "✅" : "❌");
-    console.log("📍 City:", user.city ? "✅" : "❌");
-    console.log("📍 Gender:", user.gender ? "✅" : "❌");
-    console.log("📍 Bio Length:", user.bio?.trim().length || 0, user.bio?.trim().length >= 5 ? "✅" : "❌");
-    console.log("📍 Photos Count:", photos.length, photos.length > 0 ? "✅" : "❌");
+    // დეტალური ვალიდაციის ობიექტი
+    const validation = {
+      hasFullName: !!user.full_name,
+      hasAge: !!user.age,
+      hasCity: !!user.city,
+      hasGender: !!user.gender,
+      hasBio: !!(user.bio && user.bio.trim().length >= 5),
+      hasPhotos: photos.length > 0,
+    };
 
-    // ვალიდაციის ლოგიკა
-    const isComplete = !!(
-      user.full_name &&
-      user.age &&
-      user.city &&
-      user.gender &&
-      user.bio &&
-      user.bio.trim().length >= 5 &&
-      photos.length > 0
-    );
+    // საბოლოო სტატუსი - მხოლოდ მაშინ არის true, თუ ყველა პირობა სრულდება
+    const isComplete = Object.values(validation).every((val) => val === true);
 
     res.json({
       ...user,
       photos,
       is_complete: isComplete,
+      // ამას ვამატებთ, რომ ფრონტზე (Console-ში) პირდაპირ დაინახო რა აკლია
+      profile_status: validation,
     });
-
-    console.log("iscomplete:", isComplete);
   } catch (err) {
     console.error("GET_ME ERROR:", err);
     res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
