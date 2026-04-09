@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import profileRoutes from "./routes/profile.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import likeRoutes from "./routes/like.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 
 dotenv.config();
 
@@ -30,6 +31,8 @@ app.use(express.json());
 app.use("/profile", profileRoutes);
 app.use("/auth", authRoutes);
 app.use("/likes", likeRoutes);
+console.log("Admin routes register checking...");
+app.use("/admin", adminRoutes);
 
 io.on("connection", (socket) => {
   socket.on("join", (userId) => {
@@ -46,7 +49,7 @@ io.on("connection", (socket) => {
 
 export { io };
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000 || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
