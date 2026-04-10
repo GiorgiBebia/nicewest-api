@@ -1,7 +1,5 @@
 // src/middleware/admin.middleware.js
 export const isAdmin = (req, res, next) => {
-  console.log("User from request:", req.user); // <--- ნახე აქ რა იბეჭდება ტერმინალში
-
   if (req.user && req.user.is_admin) {
     next();
   } else {
