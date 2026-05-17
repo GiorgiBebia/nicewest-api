@@ -255,3 +255,39 @@ export const markAsRead = async (req, res) => {
     res.status(500).json({ error: "error" });
   }
 };
+
+// ნებისმიერი სხვა იუზერის პროფილის წამოღება ID-ის მიხედვით
+export const getUserProfile = async (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId პარამეტრი აუცილებელია" });
+    }
+
+    // 1. მომხმარებლის ძირითადი ინფორმაცია
+    const userResult = await pool.query(
+      "SELECT id, username, full_name, bio, gender, city, age, interests FROM users WHERE id=$1",
+      [userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
+    }
+
+    // 2. მომხმარებლის სურათები პოზიციის მიხედვით სორტირებული
+    const photosResult = await pool.query(
+      "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
+      [userId],
+    );
+
+    res.json({
+      success: true,
+      user: userResult.rows[0],
+      photos: photosResult.rows,
+    });
+  } catch (err) {
+    console.error("GET_USER_PROFILE ERROR:", err);
+    res.status(500).json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
+  }
+};
