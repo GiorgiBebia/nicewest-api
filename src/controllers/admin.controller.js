@@ -47,15 +47,21 @@ export const searchUsers = async (req, res) => {
 };
 
 // წამოიღებს ყველა იუზერს, ვისაც სტატუსი აქვს 'pending'
+// წამოიღებს 'pending' იუზერებს ყველა თავისი ფოტოთი და პარამეტრით
 export const getPendingUsers = async (req, res) => {
   try {
     const query = `
       SELECT 
-        u.id, u.username, u.full_name, u.email, u.bio, u.city, u.age, u.birth_date, u.status,
-        p.image_url as profile_image
+        u.id, u.username, u.full_name, u.email, u.bio, u.city, u.age, u.birth_date, u.gender, u.looking_for, u.status,
+        COALESCE(
+          json_agg(
+            json_build_object('id', p.id, 'image_url', p.image_url, 'is_main', p.is_main)
+          ) FILTER (WHERE p.id IS NOT NULL), '[]'
+        ) as photos
       FROM users u
-      LEFT JOIN photos p ON u.id = p.user_id AND p.is_main = true
+      LEFT JOIN photos p ON u.id = p.user_id
       WHERE u.status = 'pending' AND u.is_admin = false
+      GROUP BY u.id
       ORDER BY u.created_at DESC
     `;
 
@@ -71,18 +77,21 @@ export const getPendingUsers = async (req, res) => {
   }
 };
 
-// უცვლის იუზერს სტატუსს ('approved' ან 'rejected')
-// უცვლის იუზერს სტატუსს და საჭიროებისას უწერს უარყოფის მიზეზებს
+// ერთიანი შენახვის ფუნქცია
 export const updateUserStatus = async (req, res) => {
   try {
-    const { userId, status, rejectionReasons } = req.body;
+    const { userId, rejectionReasons } = req.body;
 
-    if (!userId || !status) {
-      return res.status(400).json({ success: false, message: "userId და status სავალდებულოა" });
+    if (!userId || !rejectionReasons) {
+      return res.status(400).json({ success: false, message: "userId და rejectionReasons სავალდებულოა" });
     }
 
-    // თუ სტატუსი არის 'rejected', ვინახავთ მიზეზებს, თუ არა - ვასუფთავებთ
-    const reasons = status === "rejected" ? JSON.stringify(rejectionReasons || {}) : "{}";
+    // ვამოწმებთ, არის თუ არა რომელიმე ველი უარყოფილი (ანუ თუ რომელიმე ფლაგს აქვს მნიშვნელობა true)
+    const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
+
+    // თუ არის თუნდაც ერთი უარყოფა -> სტატუსი ხდება 'rejected', თუ ყველაფერი წესრიგშია -> 'approved'
+    const finalStatus = hasRejections ? "rejected" : "approved";
+    const reasonsStr = JSON.stringify(rejectionReasons);
 
     const query = `
       UPDATE users 
@@ -91,7 +100,7 @@ export const updateUserStatus = async (req, res) => {
       RETURNING id, status, rejection_reasons
     `;
 
-    const result = await pool.query(query, [status, reasons, userId]);
+    const result = await pool.query(query, [finalStatus, reasonsStr, userId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "მომხმარებელი ვერ მოიძებნა" });
@@ -99,7 +108,7 @@ export const updateUserStatus = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: `მომხმარებლის სტატუსი განახლდა: ${status}`,
+      message: `მომხმარებლის სტატუსი შენახულია: ${finalStatus}`,
       data: result.rows[0],
     });
   } catch (error) {
