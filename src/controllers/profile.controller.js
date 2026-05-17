@@ -14,61 +14,46 @@ export const updateLocation = async (req, res) => {
 };
 
 export const updateProfile = async (req, res) => {
-  const client = await pool.connect();
   try {
-    const userId = req.user.id;
-    const { full_name, bio, gender, looking_for, city, age, photos, search_radius, min_age, max_age, interests } =
-      req.body;
+    const userId = req.user.id; // ან როგორც გიწერიათ იუზერის ID-ს ამოღება
+    const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age } = req.body;
 
-    await client.query("BEGIN");
+    // განახლებისას სტატუსი ბრუნდება 'pending'-ზე, ხოლო უარყოფის მიზეზები ნულდება (ხდება ცარიელი ობიექტი)
+    const query = `
+      UPDATE users 
+      SET 
+        full_name = $1, 
+        age = $2, 
+        bio = $3, 
+        city = $4, 
+        gender = $5, 
+        looking_for = $6, 
+        search_radius = $7, 
+        min_age = $8, 
+        max_age = $9,
+        status = 'pending',
+        rejection_reasons = '{}'::jsonb
+      WHERE id = $10
+      RETURNING *
+    `;
 
-    // 1. ძირითადი ინფორმაციის განახლება
-    await client.query(
-      `UPDATE users 
-       SET full_name=$1, bio=$2, gender=$3, city=$4, age=$5, search_radius=$6, min_age=$7, max_age=$8, interests=$9, looking_for=$10
-       WHERE id=$11`,
-      [
-        full_name,
-        bio,
-        gender,
-        city,
-        age,
-        search_radius || 50,
-        min_age || 18,
-        max_age || 100,
-        interests || [],
-        looking_for || "female",
-        userId,
-      ],
-    );
+    const result = await pool.query(query, [
+      full_name,
+      age,
+      bio,
+      city,
+      gender,
+      looking_for,
+      search_radius,
+      min_age,
+      max_age,
+      userId,
+    ]);
 
-    // 2. ფოტოების ოპტიმიზირებული განახლება (Bulk Insert)
-    if (photos && Array.isArray(photos) && photos.length > 0) {
-      await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-
-      const validPhotos = photos.filter((p) => p && p.image_url);
-      if (validPhotos.length > 0) {
-        const values = [];
-        const placeholders = validPhotos
-          .map((p, i) => {
-            const offset = i * 3;
-            values.push(userId, p.image_url, p.position ?? i);
-            return `($${offset + 1}, $${offset + 2}, $${offset + 3})`;
-          })
-          .join(", ");
-
-        await client.query(`INSERT INTO photos (user_id, image_url, position) VALUES ${placeholders}`, values);
-      }
-    }
-
-    await client.query("COMMIT");
-    res.json({ success: true, message: "პროფილი წარმატებით განახლდა" });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Update error:", err);
-    res.status(500).json({ error: "შეცდომა განახლებისას" });
-  } finally {
-    client.release();
+    res.status(200).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error("Update Profile Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -76,8 +61,9 @@ export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
+    // დაემატა status და rejection_reasons ქვერიში
     const userResult = await pool.query(
-      "SELECT id, username, email, full_name, bio, gender, looking_for, city, age, search_radius, min_age, max_age, interests, latitude, longitude, is_admin FROM users WHERE id=$1",
+      "SELECT id, username, email, full_name, bio, gender, looking_for, city, age, search_radius, min_age, max_age, interests, latitude, longitude, is_admin, status, rejection_reasons FROM users WHERE id=$1",
       [userId],
     );
 
@@ -88,6 +74,10 @@ export const getMe = async (req, res) => {
 
     const user = userResult.rows[0];
     const photos = photosResult.rows;
+
+    if (!user) {
+      return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
+    }
 
     // დეტალური ვალიდაციის ობიექტი
     const validation = {
@@ -106,7 +96,6 @@ export const getMe = async (req, res) => {
       ...user,
       photos,
       is_complete: isComplete,
-      // ამას ვამატებთ, რომ ფრონტზე (Console-ში) პირდაპირ დაინახო რა აკლია
       profile_status: validation,
     });
   } catch (err) {
