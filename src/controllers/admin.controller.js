@@ -72,17 +72,26 @@ export const getPendingUsers = async (req, res) => {
 };
 
 // უცვლის იუზერს სტატუსს ('approved' ან 'rejected')
+// უცვლის იუზერს სტატუსს და საჭიროებისას უწერს უარყოფის მიზეზებს
 export const updateUserStatus = async (req, res) => {
   try {
-    const { userId, status } = req.body;
+    const { userId, status, rejectionReasons } = req.body;
 
     if (!userId || !status) {
       return res.status(400).json({ success: false, message: "userId და status სავალდებულოა" });
     }
 
-    // შევცვალოთ სტატუსი ბაზაში
-    const query = "UPDATE users SET status = $1 WHERE id = $2 RETURNING id, status";
-    const result = await pool.query(query, [status, userId]);
+    // თუ სტატუსი არის 'rejected', ვინახავთ მიზეზებს, თუ არა - ვასუფთავებთ
+    const reasons = status === "rejected" ? JSON.stringify(rejectionReasons || {}) : "{}";
+
+    const query = `
+      UPDATE users 
+      SET status = $1, rejection_reasons = $2 
+      WHERE id = $3 
+      RETURNING id, status, rejection_reasons
+    `;
+
+    const result = await pool.query(query, [status, reasons, userId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "მომხმარებელი ვერ მოიძებნა" });
