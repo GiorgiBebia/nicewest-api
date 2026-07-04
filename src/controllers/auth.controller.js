@@ -142,6 +142,8 @@ export const syncDevice = async (req, res) => {
     const userId = req.user.id; // მოდის middleware-იდან
     const { brand, modelName, osName, osVersion, deviceType } = req.body;
 
+    console.log("📥 ბექენდმა მიიღო მონაცემები იუზერისთვის:", userId, req.body);
+
     // ვიყენებთ ON CONFLICT-ს, რომ თუ იუზერს უკვე უწერია მოწყობილობა, განახლდეს (UPSERT)
     await pool.query(
       `INSERT INTO user_devices (user_id, brand, model_name, os_name, os_version, device_type, updated_at)
