@@ -136,3 +136,30 @@ export const refresh = async (req, res) => {
     res.status(403).json({ message: "Expired or Invalid Refresh Token" });
   }
 };
+
+export const syncDevice = async (req, res) => {
+  try {
+    const userId = req.user.id; // მოდის middleware-იდან
+    const { brand, modelName, osName, osVersion, deviceType } = req.body;
+
+    // ვიყენებთ ON CONFLICT-ს, რომ თუ იუზერს უკვე უწერია მოწყობილობა, განახლდეს (UPSERT)
+    await pool.query(
+      `INSERT INTO user_devices (user_id, brand, model_name, os_name, os_version, device_type, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+          brand = EXCLUDED.brand,
+          model_name = EXCLUDED.model_name,
+          os_name = EXCLUDED.os_name,
+          os_version = EXCLUDED.os_version,
+          device_type = EXCLUDED.device_type,
+          updated_at = CURRENT_TIMESTAMP`,
+      [userId, brand, modelName, osName, osVersion, deviceType],
+    );
+
+    res.json({ success: true, message: "მოწყობილობის მონაცემები განახლდა ბაზაში" });
+  } catch (err) {
+    console.error("SYNC DEVICE ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
+  }
+};
