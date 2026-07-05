@@ -46,6 +46,22 @@ export const searchUsers = async (req, res) => {
   }
 };
 
+export const getPendingUsers = async (req, res) => {
+  try {
+    const query = `
+      SELECT id, username, full_name, email, is_verified, created_at 
+      FROM users 
+      WHERE is_verified = false
+      ORDER BY created_at DESC
+    `;
+    const result = await pool.query(query);
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error("Get Pending Users Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const getPendingReports = async (req, res) => {
   try {
     const query = `
@@ -84,7 +100,7 @@ export const updateUserStatus = async (req, res) => {
     const { userId, rejectionReasons } = req.body;
 
     if (!userId || !rejectionReasons) {
-      return res.status(400).json({ success: false, message: "userId და rejectionReasons სავალდებულოა" });
+      return res.status(400).json({ success: false, message: "userId and rejectionReasons are required" });
     }
 
     const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
@@ -101,12 +117,12 @@ export const updateUserStatus = async (req, res) => {
     const result = await pool.query(query, [finalStatus, reasonsStr, userId]);
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: "მომხმარებელი ვერ მოიძებნა" });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     res.status(200).json({
       success: true,
-      message: `მომხმარებლის სტატუსი შენახულია: ${finalStatus}`,
+      message: `User status updated to: ${finalStatus}`,
       data: result.rows[0],
     });
   } catch (error) {
@@ -115,16 +131,13 @@ export const updateUserStatus = async (req, res) => {
   }
 };
 
-/* ==========================================================
-   ახალი ფუნქციები: რეპორტები და ბანი ადმინისთვის
-   ========================================================== */
-
-// 1. ყველა მიმდინარე რეპორტის წამოღება
 export const getAdminReports = async (req, res) => {
   try {
     const query = `
       SELECT 
         r.id, r.reason, r.details, r.status, r.created_at,
+        r.reporter_id,
+        r.reported_id,
         reporter.username as reporter_username, reporter.full_name as reporter_name,
         reported.id as reported_user_id, reported.username as reported_username, reported.full_name as reported_name
       FROM reports r
@@ -141,48 +154,42 @@ export const getAdminReports = async (req, res) => {
   }
 };
 
-// 2. რეპორტის დახურვა (უარყოფა ან მოგვარება ბანის გარეშე)
 export const resolveReport = async (req, res) => {
   try {
     const { reportId } = req.body;
     if (!reportId) {
-      return res.status(400).json({ success: false, message: "reportId სავალდებულოა" });
+      return res.status(400).json({ success: false, message: "reportId is required" });
     }
 
     await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [reportId]);
-    res.status(200).json({ success: true, message: "საჩივარი დაარქივდა წარმატებით" });
+    res.status(200).json({ success: true, message: "Report resolved successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// 3. მომხმარებლის დაბლოკვა (ბანი) და მისი რეპორტების დახურვა
 export const banUserByAdmin = async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) {
-      return res.status(400).json({ success: false, message: "userId სავალდებულოა" });
+      return res.status(400).json({ success: false, message: "userId is required" });
     }
 
-    // ვუცვლით ბანის ველს users ცხრილში
     await pool.query("UPDATE users SET is_banned = true WHERE id = $1", [userId]);
-
-    // ავტომატურად ვუხურავთ ამ იუზერზე შესულ ყველა ღია საჩივარს
     await pool.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
 
-    res.status(200).json({ success: true, message: "მომხმარებელს დაედო ბანი სისტემაში" });
+    res.status(200).json({ success: true, message: "User banned successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-// ორ მომხმარებელს შორის მიმოწერის წამოღება ადმინისტრატორისთვის
 
 export const getChatHistoryForAdmin = async (req, res) => {
   try {
     const { user1, user2 } = req.query;
 
     if (!user1 || !user2) {
-      return res.status(400).json({ success: false, message: "user1 და user2 პარამეტრები სავალდებულოა" });
+      return res.status(400).json({ success: false, message: "user1 and user2 parameters are required" });
     }
 
     const query = `
