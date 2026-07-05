@@ -46,21 +46,26 @@ export const searchUsers = async (req, res) => {
   }
 };
 
-export const getPendingUsers = async (req, res) => {
+export const getPendingReports = async (req, res) => {
   try {
+    // 🛑 აი ეს ქუერი ჩაანაცვლე მთლიანად:
     const query = `
       SELECT 
-        u.id, u.username, u.full_name, u.email, u.bio, u.city, u.age, u.birth_date, u.gender, u.looking_for, u.status,
-        COALESCE(
-          json_agg(
-            json_build_object('id', p.id, 'image_url', p.image_url, 'position', p.position)
-          ) FILTER (WHERE p.id IS NOT NULL), '[]'
-        ) as photos
-      FROM users u
-      LEFT JOIN photos p ON u.id = p.user_id
-      WHERE u.status = 'pending' AND u.is_admin = false
-      GROUP BY u.id
-      ORDER BY u.created_at DESC
+        r.id, 
+        r.reason, 
+        r.details, 
+        r.status, 
+        r.created_at,
+        r.reporter_id,          -- 👈 ეს აუცილებელია, რომ ფრონტენდმა undefined არ ამოაგდოს
+        r.reported_id,          -- 👈 ესეც აუცილებელია
+        reporter.username AS reporter_username,
+        reporter.full_name AS reporter_name,
+        reported.username AS reported_username,
+        reported.full_name AS reported_name
+      FROM reports r
+      JOIN users reporter ON r.reporter_id = reporter.id
+      JOIN users reported ON r.reported_id = reported.id
+      WHERE r.status = 'pending'
     `;
 
     const result = await pool.query(query);
@@ -70,7 +75,7 @@ export const getPendingUsers = async (req, res) => {
       data: result.rows,
     });
   } catch (error) {
-    console.error("Get Pending Users Error:", error);
+    console.error("Get Pending Reports Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
