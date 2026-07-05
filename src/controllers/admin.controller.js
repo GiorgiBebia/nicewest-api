@@ -48,7 +48,6 @@ export const searchUsers = async (req, res) => {
 
 export const getPendingReports = async (req, res) => {
   try {
-    // 🛑 აი ეს ქუერი ჩაანაცვლე მთლიანად:
     const query = `
       SELECT 
         r.id, 
@@ -56,8 +55,8 @@ export const getPendingReports = async (req, res) => {
         r.details, 
         r.status, 
         r.created_at,
-        r.reporter_id,          -- 👈 ეს აუცილებელია, რომ ფრონტენდმა undefined არ ამოაგდოს
-        r.reported_id,          -- 👈 ესეც აუცილებელია
+        r.reporter_id,
+        r.reported_id,
         reporter.username AS reporter_username,
         reporter.full_name AS reporter_name,
         reported.username AS reported_username,
