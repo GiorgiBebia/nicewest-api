@@ -7,6 +7,7 @@ import {
   getAdminReports, // ახალი
   resolveReport, // ახალი
   banUserByAdmin, // ახალი
+  getChatHistoryForAdmin,
 } from "../controllers/admin.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import { isAdmin } from "../middleware/admin.middleware.js";
@@ -25,4 +26,6 @@ router.get("/reports", authMiddleware, isAdmin, getAdminReports);
 router.post("/reports/resolve", authMiddleware, isAdmin, resolveReport);
 router.post("/user/ban", authMiddleware, isAdmin, banUserByAdmin);
 
+// არ დაგავიწყდეს getChatHistoryForAdmin-ის იმპორტირება ფაილის თავში!
+router.get("/reports/chat-history", authMiddleware, isAdmin, getChatHistoryForAdmin);
 export default router;

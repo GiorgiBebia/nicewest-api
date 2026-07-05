@@ -171,3 +171,32 @@ export const banUserByAdmin = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+// ორ მომხმარებელს შორის მიმოწერის წამოღება ადმინისტრატორისთვის
+
+export const getChatHistoryForAdmin = async (req, res) => {
+  try {
+    const { user1, user2 } = req.query;
+
+    if (!user1 || !user2) {
+      return res.status(400).json({ success: false, message: "user1 და user2 პარამეტრები სავალდებულოა" });
+    }
+
+    const query = `
+      SELECT id, sender_id, receiver_id, text, created_at 
+      FROM messages 
+      WHERE (sender_id = $1 AND receiver_id = $2) 
+         OR (sender_id = $2 AND receiver_id = $1)
+      ORDER BY created_at ASC
+    `;
+
+    const result = await pool.query(query, [user1, user2]);
+
+    res.status(200).json({
+      success: true,
+      data: result.rows,
+    });
+  } catch (error) {
+    console.error("Get Chat History Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
