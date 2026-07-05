@@ -10,6 +10,8 @@ import {
   markAsRead,
   updateLocation,
   getUserProfile,
+  reportUser, // დაემატა
+  blockUser, // დაემატა
 } from "../controllers/profile.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 
@@ -25,4 +27,9 @@ router.get("/messages/:partnerId", authMiddleware, getChatMessages);
 router.post("/messages/send", authMiddleware, sendMessage);
 router.put("/messages/read/:partnerId", authMiddleware, markAsRead);
 router.get("/user", authMiddleware, getUserProfile);
+
+// ახალი ენდპოინტები Report & Block სისტემისთვის
+router.post("/report", authMiddleware, reportUser);
+router.post("/block", authMiddleware, blockUser);
+
 export default router;

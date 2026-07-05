@@ -15,10 +15,9 @@ export const updateLocation = async (req, res) => {
 
 export const updateProfile = async (req, res) => {
   try {
-    const userId = req.user.id; // ან როგორც გიწერიათ იუზერის ID-ს ამოღება
+    const userId = req.user.id;
     const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age } = req.body;
 
-    // განახლებისას სტატუსი ბრუნდება 'pending'-ზე, ხოლო უარყოფის მიზეზები ნულდება (ხდება ცარიელი ობიექტი)
     const query = `
       UPDATE users 
       SET 
@@ -61,7 +60,6 @@ export const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // დაემატა status და rejection_reasons ქვერიში
     const userResult = await pool.query(
       "SELECT id, username, email, full_name, bio, gender, looking_for, city, age, search_radius, min_age, max_age, interests, latitude, longitude, is_admin, status, rejection_reasons FROM users WHERE id=$1",
       [userId],
@@ -79,7 +77,6 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
 
-    // დეტალური ვალიდაციის ობიექტი
     const validation = {
       hasFullName: !!user.full_name,
       hasAge: !!user.age,
@@ -89,7 +86,6 @@ export const getMe = async (req, res) => {
       hasPhotos: photos.length > 0,
     };
 
-    // საბოლოო სტატუსი - მხოლოდ მაშინ არის true, თუ ყველა პირობა სრულდება
     const isComplete = Object.values(validation).every((val) => val === true);
 
     res.json({
@@ -100,10 +96,11 @@ export const getMe = async (req, res) => {
     });
   } catch (err) {
     console.error("GET_ME ERROR:", err);
-    res.status(500).json({ error: "შეცდომა მონაცემების წამოღებისას" });
+    res.status(500).json({ error: "შეცდომა მონაცების წამოღებისას" });
   }
 };
 
+// განახლდა: გამორიცხავს ორმხრივად დაბლოკილ იუზერებს სვაიპებიდან
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -129,6 +126,9 @@ export const getDiscovery = async (req, res) => {
           AND u.gender = $7
           AND u.latitude IS NOT NULL
           AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+          -- ფილტრი: გამორიცხოს იუზერები, ვინც მე დავბლოკე ან ვინც მე დამბლოკა
+          AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
+          AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
       )
       SELECT f.*, 
              COALESCE(
@@ -174,6 +174,7 @@ export const addLike = async (req, res) => {
   }
 };
 
+// განახლდა: მატჩების სიიდან აქრობს დაბლოკილ ხალხს
 export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -184,7 +185,10 @@ export const getMatches = async (req, res) => {
       LEFT JOIN photos p ON p.user_id = u.id AND p.position = 0
       LEFT JOIN LATERAL (SELECT text, created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) msg ON true
       LEFT JOIN (SELECT sender_id, COUNT(*) as count FROM messages WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id) unread ON unread.sender_id = u.id
-      WHERE m.user1_id = $1 OR m.user2_id = $1
+      WHERE (m.user1_id = $1 OR m.user2_id = $1)
+      -- ფილტრი: არ წამოიღო თუ რომელიმეს ბლოკი აქვს ნადები
+      AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
+      AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
       ORDER BY last_message_at DESC NULLS LAST`,
       [userId],
     );
@@ -207,10 +211,21 @@ export const getChatMessages = async (req, res) => {
   }
 };
 
+// განახლდა: უშლის ხელს შეტყობინების გაგზავნას თუ იუზერი დაბლოკილია
 export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
     const { receiverId, content } = req.body;
+
+    // შემოწმება: ხომ არ არის ბლოკი ორმხრივად
+    const blockCheck = await pool.query(
+      "SELECT id FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)",
+      [senderId, receiverId],
+    );
+
+    if (blockCheck.rows.length > 0) {
+      return res.status(403).json({ error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია." });
+    }
 
     const matchResult = await pool.query(
       `SELECT id FROM matches WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $2 AND user2_id = $1) LIMIT 1`,
@@ -245,16 +260,26 @@ export const markAsRead = async (req, res) => {
   }
 };
 
-// ნებისმიერი სხვა იუზერის პროფილის წამოღება ID-ის მიხედვით
+// განახლდა: არ აჩვენებს პროფილს თუ ბლოკია დადებული
 export const getUserProfile = async (req, res) => {
   try {
     const { userId } = req.query;
+    const myId = req.user.id;
 
     if (!userId) {
       return res.status(400).json({ error: "userId პარამეტრი აუცილებელია" });
     }
 
-    // 1. მომხმარებლის ძირითადი ინფორმაცია
+    // შემოწმება: ბლოკი ხომ არ არის
+    const blockCheck = await pool.query(
+      "SELECT id FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)",
+      [myId, userId],
+    );
+
+    if (blockCheck.rows.length > 0) {
+      return res.status(403).json({ error: "პროფილი მიუწვდომელია" });
+    }
+
     const userResult = await pool.query(
       "SELECT id, username, full_name, bio, gender, city, age, interests FROM users WHERE id=$1",
       [userId],
@@ -264,7 +289,6 @@ export const getUserProfile = async (req, res) => {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
 
-    // 2. მომხმარებლის სურათები პოზიციის მიხედვით სორტირებული
     const photosResult = await pool.query(
       "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
@@ -278,5 +302,68 @@ export const getUserProfile = async (req, res) => {
   } catch (err) {
     console.error("GET_USER_PROFILE ERROR:", err);
     res.status(500).json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
+  }
+};
+
+/* ==========================================================
+   ახალი ფუნქციები: REPORT & BLOCK ლოგიკა
+   ========================================================== */
+
+// 1. მომხმარებლის რეპორტი
+export const reportUser = async (req, res) => {
+  try {
+    const reporterId = req.user.id;
+    const { reportedUserId, reason, details } = req.body;
+
+    if (!reportedUserId || !reason) {
+      return res.status(400).json({ error: "reportedUserId და reason აუცილებელია" });
+    }
+
+    await pool.query("INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)", [
+      reporterId,
+      reportedUserId,
+      reason,
+      details || "",
+    ]);
+
+    res.json({ success: true, message: "რეპორტი წარმატებით გაიგზავნა" });
+  } catch (err) {
+    console.error("REPORT USER ERROR:", err);
+    res.status(500).json({ error: "რეპორტის გაგზავნა ვერ მოხერხდა" });
+  }
+};
+
+// 2. მომხმარებლის დაბლოკვა
+export const blockUser = async (req, res) => {
+  try {
+    const blockerId = req.user.id;
+    const { blockedUserId } = req.body;
+
+    if (!blockedUserId) {
+      return res.status(400).json({ error: "blockedUserId აუცილებელია" });
+    }
+
+    if (blockerId === parseInt(blockedUserId)) {
+      return res.status(400).json({ error: "საკუთარ თავს ვერ დაბლოკავთ" });
+    }
+
+    // ჩავსვათ ბლოკი (ON CONFLICT DO NOTHING - თუ უკვე დაბლოკილი გვყავდა, შეცდომა რომ არ ამოაგდოს)
+    await pool.query("INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+      blockerId,
+      blockedUserId,
+    ]);
+
+    // [ოპციონალური] ბლოკირებისას ავტომატურად წავშალოთ მათი Match, რომ ჩატებიდანაც გაქრეს
+    await pool.query(
+      `DELETE FROM matches 
+       WHERE (user1_id = $1 AND user2_id = $2) 
+          OR (user1_id = $2 AND user2_id = $1)`,
+      [blockerId, blockedUserId],
+    );
+
+    res.json({ success: true, message: "მომხმარებელი დაბლოკილია" });
+  } catch (err) {
+    console.error("BLOCK USER ERROR:", err);
+    res.status(500).json({ error: "მომხმარებლის დაბლოკვა ვერ მოხერხდა" });
   }
 };

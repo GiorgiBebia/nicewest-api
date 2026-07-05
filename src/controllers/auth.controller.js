@@ -140,15 +140,25 @@ export const refresh = async (req, res) => {
 export const syncDevice = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { brand, modelName, osName, osVersion, deviceType, manufacturer, isRealDevice, totalMemory, isRooted } =
-      req.body;
+    const {
+      brand,
+      modelName,
+      osName,
+      osVersion,
+      deviceType,
+      manufacturer,
+      isRealDevice,
+      totalMemory,
+      isRooted,
+      pushToken, // მივიღეთ ფრონტიდან
+    } = req.body;
 
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, 
-        device_type, manufacturer, is_real_device, total_memory, is_rooted, updated_at
+        device_type, manufacturer, is_real_device, total_memory, is_rooted, push_token, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
        ON CONFLICT (user_id) 
        DO UPDATE SET 
           brand = EXCLUDED.brand,
@@ -160,11 +170,24 @@ export const syncDevice = async (req, res) => {
           is_real_device = EXCLUDED.is_real_device,
           total_memory = EXCLUDED.total_memory,
           is_rooted = EXCLUDED.is_rooted,
+          push_token = EXCLUDED.push_token, -- განახლდება ახალი ტოკენით
           updated_at = CURRENT_TIMESTAMP`,
-      [userId, brand, modelName, osName, osVersion, deviceType, manufacturer, isRealDevice, totalMemory, isRooted],
+      [
+        userId,
+        brand,
+        modelName,
+        osName,
+        osVersion,
+        deviceType,
+        manufacturer,
+        isRealDevice,
+        totalMemory,
+        isRooted,
+        pushToken,
+      ],
     );
 
-    res.json({ success: true, message: "მოწყობილობის გაფართოებული მონაცემები განახლდა ბაზაში" });
+    res.json({ success: true, message: "მოწყობილობის მონაცემები და Push ტოკენი განახლდა" });
   } catch (err) {
     console.error("SYNC DEVICE ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
