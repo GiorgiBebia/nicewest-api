@@ -193,3 +193,32 @@ export const syncDevice = async (req, res) => {
     res.status(500).json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
   }
 };
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    if (!email || !newPassword) {
+      return res.status(400).json({ message: "Email და ახალი პაროლი აუცილებელია" });
+    }
+
+    const emailTrim = email.trim().toLowerCase();
+
+    // 1. ვამოწმებთ არსებობს თუ არა მომხმარებელი ამ ელფოსტით
+    const userResult = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1)", [emailTrim]);
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: "მომხმარებელი ამ ელფოსტით ვერ მოიძებნა" });
+    }
+
+    // 2. ახალი პაროლის დაჰეშვა
+    const newHash = await bcrypt.hash(newPassword, 10);
+
+    // 3. პაროლის განახლება ბაზაში
+    await pool.query("UPDATE users SET password_hash = $1 WHERE LOWER(email) = LOWER($2)", [newHash, emailTrim]);
+
+    res.json({ success: true, message: "პაროლი წარმატებით შეიცვალა" });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა პაროლის შეცვლისას" });
+  }
+};
