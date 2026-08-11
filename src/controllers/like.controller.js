@@ -63,6 +63,25 @@ export const likeUser = async (req, res) => {
   }
 };
 
+export const dislikeUser = async (req, res) => {
+  try {
+    const from = req.user.id;
+    const { to } = req.body;
+
+    if (!to) return res.status(400).json({ error: "Target user ID (to) is required" });
+
+    await pool.query(
+      "INSERT INTO dislikes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT (from_user_id, to_user_id) DO NOTHING",
+      [from, to],
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DISLIKE ERROR:", err);
+    res.status(500).json({ error: "დისლაიქის პროცესი დაფეილდა" });
+  }
+};
+
 export const getLikesStatus = async (req, res) => {
   try {
     const userId = req.user.id;

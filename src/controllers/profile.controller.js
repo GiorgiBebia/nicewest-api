@@ -100,7 +100,7 @@ export const getMe = async (req, res) => {
   }
 };
 
-// განახლდა: გამორიცხავს ორმხრივად დაბლოკილ იუზერებს სვაიპებიდან
+// განახლდა: გამორიცხავს ორმხრივად დაბლოკილ და დისლაიქებულ (ბოლო 7 დღის) იუზერებს სვაიპებიდან
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -126,6 +126,7 @@ export const getDiscovery = async (req, res) => {
           AND u.gender = $7
           AND u.latitude IS NOT NULL
           AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+          AND u.id NOT IN (SELECT to_user_id FROM dislikes WHERE from_user_id = $1)
           -- ფილტრი: გამორიცხოს იუზერები, ვინც მე დავბლოკე ან ვინც მე დამბლოკა
           AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
           AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
