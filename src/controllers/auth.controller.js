@@ -14,10 +14,9 @@ if (!JWT_SECRET) {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// დამხმარე ფუნქცია ტოკენების გენერაციისთვის
+// დამხმარე ფუნქცია ტოკენების გენერაციისთვის (გასწორდა: accessToken-ს გაუწერა 15 წუთიანი ვადა)
 const generateTokens = (user) => {
-  // accessToken ვადის გარეშე - ყოველთის მოქმედი იქნება
-  const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+  const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
 
   const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: "30d" });
 
@@ -127,8 +126,7 @@ export const refresh = async (req, res) => {
 
     if (!user) return res.status(403).json({ message: "User not found" });
 
-    // ახალი accessToken ვადის გარეშე - ყოველთის მოქმედი იქნება
-    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
 
     res.json({ accessToken: newAccessToken });
   } catch (e) {
@@ -150,7 +148,7 @@ export const syncDevice = async (req, res) => {
       isRealDevice,
       totalMemory,
       isRooted,
-      pushToken, // მივიღეთ ფრონტიდან
+      pushToken,
     } = req.body;
 
     await pool.query(
@@ -170,7 +168,7 @@ export const syncDevice = async (req, res) => {
           is_real_device = EXCLUDED.is_real_device,
           total_memory = EXCLUDED.total_memory,
           is_rooted = EXCLUDED.is_rooted,
-          push_token = EXCLUDED.push_token, -- განახლდება ახალი ტოკენით
+          push_token = EXCLUDED.push_token,
           updated_at = CURRENT_TIMESTAMP`,
       [
         userId,
@@ -193,6 +191,7 @@ export const syncDevice = async (req, res) => {
     res.status(500).json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
   }
 };
+
 export const resetPassword = async (req, res) => {
   try {
     const { email, newPassword } = req.body;
@@ -203,17 +202,14 @@ export const resetPassword = async (req, res) => {
 
     const emailTrim = email.trim().toLowerCase();
 
-    // 1. ვამოწმებთ არსებობს თუ არა მომხმარებელი ამ ელფოსტით
     const userResult = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1)", [emailTrim]);
 
     if (userResult.rows.length === 0) {
       return res.status(404).json({ message: "მომხმარებელი ამ ელფოსტით ვერ მოიძებნა" });
     }
 
-    // 2. ახალი პაროლის დაჰეშვა
     const newHash = await bcrypt.hash(newPassword, 10);
 
-    // 3. პაროლის განახლება ბაზაში
     await pool.query("UPDATE users SET password_hash = $1 WHERE LOWER(email) = LOWER($2)", [newHash, emailTrim]);
 
     res.json({ success: true, message: "პაროლი წარმატებით შეიცვალა" });
