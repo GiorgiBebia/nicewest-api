@@ -10,17 +10,24 @@ export const authMiddleware = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // ბაზიდან ვამოწმებთ იუზერს და მის სტატუსს
-    const result = await pool.query("SELECT id, is_admin FROM users WHERE id = $1", [decoded.id]);
+    // ბაზიდან ვამოწმებთ იუზერს, მის ადმინისტრატორობას და დაბლოკვის სტატუსს
+    const result = await pool.query("SELECT id, is_admin, is_banned FROM users WHERE id = $1", [decoded.id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    const user = result.rows[0];
+
+    // თუ მომხმარებელი დაბლოკილია, ვბლოკავთ ნებისმიერ მოთხოვნას
+    if (user.is_banned) {
+      return res.status(403).json({ message: "User is banned" });
+    }
+
     // აქ ვავსებთ req.user-ს ბაზის რეალური მონაცემებით
     req.user = {
-      id: result.rows[0].id,
-      is_admin: result.rows[0].is_admin, // აქ უკვე 100% იქნება მნიშვნელობა
+      id: user.id,
+      is_admin: user.is_admin,
     };
 
     next();

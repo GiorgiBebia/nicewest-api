@@ -80,6 +80,12 @@ export const login = async (req, res) => {
     }
 
     const user = result.rows[0];
+
+    // დაბლოკვის შემოწმება ავტორიზაციისას
+    if (user.is_banned) {
+      return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
+    }
+
     const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
       return res.status(400).json({ message: "პაროლი არასწორია" });
@@ -121,10 +127,15 @@ export const refresh = async (req, res) => {
       return res.status(403).json({ message: "Invalid Refresh Token" });
     }
 
-    const userResult = await pool.query("SELECT id, username FROM users WHERE id = $1", [decoded.id]);
+    const userResult = await pool.query("SELECT id, username, is_banned FROM users WHERE id = $1", [decoded.id]);
     const user = userResult.rows[0];
 
     if (!user) return res.status(403).json({ message: "User not found" });
+
+    // დაბლოკვის შემოწმება ტოკენის განახლებისას
+    if (user.is_banned) {
+      return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
+    }
 
     const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
 
