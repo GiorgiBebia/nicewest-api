@@ -211,3 +211,56 @@ export const getChatHistoryForAdmin = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const sendPushNotification = async (req, res) => {
+  try {
+    const { title, body, userIds, sendToAll } = req.body;
+
+    if (!title || !body) {
+      return res.status(400).json({ success: false, message: "title and body are required" });
+    }
+
+    let query = "SELECT push_token FROM user_devices WHERE push_token IS NOT NULL AND push_token != ''";
+    let queryParams = [];
+
+    if (!sendToAll && Array.isArray(userIds) && userIds.length > 0) {
+      query += " AND user_id = ANY($1)";
+      queryParams.push(userIds);
+    }
+
+    const result = await pool.query(query, queryParams);
+    const tokens = result.rows.map((row) => row.push_token);
+
+    if (tokens.length === 0) {
+      return res.status(400).json({ success: false, message: "No active push tokens found for specified criteria" });
+    }
+
+    const messages = tokens.map((token) => ({
+      to: token,
+      sound: "default",
+      title: title,
+      body: body,
+    }));
+
+    const expoResponse = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+
+    const responseData = await expoResponse.json();
+
+    res.status(200).json({
+      success: true,
+      message: `Notification request sent to ${tokens.length} device(s)`,
+      expoResult: responseData,
+    });
+  } catch (error) {
+    console.error("Send Push Notification Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
