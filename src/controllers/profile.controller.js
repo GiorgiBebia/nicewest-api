@@ -69,10 +69,12 @@ export const updateProfile = async (req, res) => {
         const photo = photos[i];
         if (photo && photo.image_url) {
           const photoPos = photo.position !== undefined ? photo.position : i;
-          await client.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
+          const isMain = photoPos === 0;
+          await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
             userId,
             photo.image_url,
             photoPos,
+            isMain,
           ]);
         }
       }
@@ -101,7 +103,7 @@ export const getMe = async (req, res) => {
     );
 
     const photosResult = await pool.query(
-      "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
+      "SELECT image_url, position, is_main FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
     );
 
@@ -159,6 +161,7 @@ export const getDiscovery = async (req, res) => {
           WHERE u.id != $1 
           AND u.age BETWEEN $5 AND $6
           AND u.gender = $7
+          AND u.status = 'approved'
           AND u.latitude IS NOT NULL
           AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
           AND u.id NOT IN (SELECT to_user_id FROM dislikes WHERE from_user_id = $1)
@@ -167,7 +170,7 @@ export const getDiscovery = async (req, res) => {
       )
       SELECT f.*, 
              COALESCE(
-               JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position) ORDER BY p.position ASC) 
+               JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position, 'is_main', p.is_main) ORDER BY p.position ASC) 
                FILTER (WHERE p.id IS NOT NULL), '[]'
              ) AS photos
       FROM filtered_users f
@@ -216,7 +219,7 @@ export const getMatches = async (req, res) => {
       `SELECT u.id, u.full_name, p.image_url as main_photo, msg.text as last_message_text, msg.created_at as last_message_at, COALESCE(unread.count, 0) as unread_count
       FROM matches m
       JOIN users u ON (u.id = CASE WHEN m.user1_id = $1 THEN m.user2_id ELSE m.user1_id END)
-      LEFT JOIN photos p ON p.user_id = u.id AND p.position = 0
+      LEFT JOIN photos p ON p.user_id = u.id AND (p.position = 0 OR p.is_main = true)
       LEFT JOIN LATERAL (SELECT text, created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) msg ON true
       LEFT JOIN (SELECT sender_id, COUNT(*) as count FROM messages WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id) unread ON unread.sender_id = u.id
       WHERE (m.user1_id = $1 OR m.user2_id = $1)
@@ -319,7 +322,7 @@ export const getUserProfile = async (req, res) => {
     }
 
     const photosResult = await pool.query(
-      "SELECT image_url, position FROM photos WHERE user_id=$1 ORDER BY position ASC",
+      "SELECT image_url, position, is_main FROM photos WHERE user_id=$1 ORDER BY position ASC",
       [userId],
     );
 

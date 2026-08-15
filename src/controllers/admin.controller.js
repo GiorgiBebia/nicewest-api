@@ -59,24 +59,30 @@ export const getPendingUsers = async (req, res) => {
         u.age, 
         u.birth_date, 
         u.status, 
-        u.is_verified, 
         u.created_at,
-        p.image_url AS profile_image,
+        u.rejection_reasons,
+        (
+          SELECT image_url 
+          FROM photos 
+          WHERE user_id = u.id AND (position = 0 OR is_main = true)
+          LIMIT 1
+        ) AS profile_image,
         COALESCE(
-          json_agg(
-            json_build_object(
-              'id', ph.id,
-              'image_url', ph.image_url,
-              'position', ph.position,
-              'is_main', (ph.position = 0)
-            )
-          ) FILTER (WHERE ph.id IS NOT NULL), '[]'
+          (
+            SELECT json_agg(
+              json_build_object(
+                'id', ph.id,
+                'image_url', ph.image_url,
+                'position', ph.position,
+                'is_main', ph.is_main
+              )
+            ) 
+            FROM photos ph 
+            WHERE ph.user_id = u.id
+          ), '[]'::json
         ) AS photos
       FROM users u
-      LEFT JOIN photos p ON u.id = p.user_id AND p.position = 0
-      LEFT JOIN photos ph ON u.id = ph.user_id
-      WHERE u.status = 'pending' OR u.is_verified = false
-      GROUP BY u.id, p.image_url
+      WHERE u.status = 'pending'
       ORDER BY u.created_at DESC
     `;
 
@@ -131,7 +137,7 @@ export const updateUserStatus = async (req, res) => {
 
     const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
     const finalStatus = hasRejections ? "rejected" : "approved";
-    const reasonsStr = JSON.stringify(rejectionReasons);
+    const reasonsJson = JSON.stringify(rejectionReasons);
 
     const query = `
       UPDATE users 
@@ -140,7 +146,7 @@ export const updateUserStatus = async (req, res) => {
       RETURNING id, status, rejection_reasons
     `;
 
-    const result = await pool.query(query, [finalStatus, reasonsStr, userId]);
+    const result = await pool.query(query, [finalStatus, reasonsJson, userId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "User not found" });
