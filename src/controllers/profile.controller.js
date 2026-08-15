@@ -17,10 +17,14 @@ export const updateProfile = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = req.user.id;
+    const isAdmin = req.user.is_admin;
     const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age, photos } = req.body;
 
     // ტრანზაქციის დაწყება
     await client.query("BEGIN");
+
+    // თუ იუზერი არის ადმინი, სტატუსი ინარჩუნებს მიმდინარე მნიშვნელობას (ან approved-ს), ხოლო ჩვეულებრივი იუზერისთვის ხდება 'pending'
+    const targetStatus = isAdmin ? req.user.status || "approved" : "pending";
 
     // 1. მომხმარებლის ძირითადი მონაცემების განახლება
     const query = `
@@ -35,9 +39,9 @@ export const updateProfile = async (req, res) => {
         search_radius = $7, 
         min_age = $8, 
         max_age = $9,
-        status = 'pending',
+        status = $10,
         rejection_reasons = '{}'::jsonb
-      WHERE id = $10
+      WHERE id = $11
       RETURNING *
     `;
 
@@ -51,21 +55,24 @@ export const updateProfile = async (req, res) => {
       search_radius,
       min_age,
       max_age,
+      targetStatus,
       userId,
     ]);
 
-    // 2. ფოტოების განახლება photos ცხრილში (თუ ფოტოების მასივი გამოგზავნილია)
+    // 2. ფოტოების განახლება photos ცხრილში
     if (photos && Array.isArray(photos)) {
       // წავშალოთ ძველი ფოტოების ჩანაწერები
       await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
 
-      // ჩავსვათ ახალი ფოტოები
-      for (const photo of photos) {
+      // ჩავსვათ ახალი ფოტოები სწორი პოზიციებით
+      for (let i = 0; i < photos.length; i++) {
+        const photo = photos[i];
         if (photo && photo.image_url) {
+          const photoPos = photo.position !== undefined ? photo.position : i;
           await client.query("INSERT INTO photos (user_id, image_url, position) VALUES ($1, $2, $3)", [
             userId,
             photo.image_url,
-            photo.position,
+            photoPos,
           ]);
         }
       }
