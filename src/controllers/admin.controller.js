@@ -49,11 +49,37 @@ export const searchUsers = async (req, res) => {
 export const getPendingUsers = async (req, res) => {
   try {
     const query = `
-      SELECT id, username, full_name, email, is_verified, created_at 
-      FROM users 
-      WHERE is_verified = false
-      ORDER BY created_at DESC
+      SELECT 
+        u.id, 
+        u.username, 
+        u.full_name, 
+        u.email, 
+        u.bio, 
+        u.city, 
+        u.age, 
+        u.birth_date, 
+        u.status, 
+        u.is_verified, 
+        u.created_at,
+        p.image_url AS profile_image,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', ph.id,
+              'image_url', ph.image_url,
+              'position', ph.position,
+              'is_main', (ph.position = 0)
+            )
+          ) FILTER (WHERE ph.id IS NOT NULL), '[]'
+        ) AS photos
+      FROM users u
+      LEFT JOIN photos p ON u.id = p.user_id AND p.position = 0
+      LEFT JOIN photos ph ON u.id = ph.user_id
+      WHERE u.status = 'pending' OR u.is_verified = false
+      GROUP BY u.id, p.image_url
+      ORDER BY u.created_at DESC
     `;
+
     const result = await pool.query(query);
     res.status(200).json({ success: true, data: result.rows });
   } catch (error) {
