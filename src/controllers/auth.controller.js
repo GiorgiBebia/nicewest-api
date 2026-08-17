@@ -179,7 +179,7 @@ export const syncDevice = async (req, res) => {
           is_real_device = EXCLUDED.is_real_device,
           total_memory = EXCLUDED.total_memory,
           is_rooted = EXCLUDED.is_rooted,
-          push_token = EXCLUDED.push_token,
+          push_token = COALESCE(EXCLUDED.push_token, user_devices.push_token),
           updated_at = CURRENT_TIMESTAMP`,
       [
         userId,

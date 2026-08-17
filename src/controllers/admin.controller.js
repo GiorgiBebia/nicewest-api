@@ -1,4 +1,5 @@
 import { pool } from "../db/index.js";
+import { notifyUser } from "../services/notification.service.js";
 
 export const getStats = async (req, res) => {
   try {
@@ -150,6 +151,23 @@ export const updateUserStatus = async (req, res) => {
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // განხილვის დასრულების შემდეგ მომხმარებლისთვის ნოთიფიკაციის გაგზავნა
+    if (finalStatus === "approved") {
+      notifyUser(
+        userId,
+        "პროფილი დადასტურებულია! 🎉",
+        "თქვენი განაცხადი წარმატებით დამოწმდა. ახლა შეგიძლიათ ისარგებლოთ აპლიკაციით.",
+        { status: "approved" },
+      );
+    } else {
+      notifyUser(
+        userId,
+        "პროფილის განაცხადი უარყოფილია ⚠️",
+        "თქვენს პროფილში დაფიქსირდა ხარვეზი. გთხოვთ შეამოწმოთ დეტალები და განაახლოთ პროფილი.",
+        { status: "rejected" },
+      );
     }
 
     res.status(200).json({

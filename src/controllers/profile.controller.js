@@ -1,5 +1,6 @@
 import { pool } from "../db/index.js";
 import { io } from "../server.js";
+import { notifyAdmins } from "../services/notification.service.js";
 
 // ლოკაციის განახლება
 export const updateLocation = async (req, res) => {
@@ -18,6 +19,7 @@ export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const isAdmin = req.user.is_admin;
+    const username = req.user.username;
     const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age, photos } = req.body;
 
     // ტრანზაქციის დაწყება
@@ -82,6 +84,15 @@ export const updateProfile = async (req, res) => {
 
     // ტრანზაქციის დადასტურება
     await client.query("COMMIT");
+
+    // თუ მომხმარებელი არ არის ადმინი და სტატუსი გახდა pending, ვუგზავნით ნოთიფიკაციას ადმინებს
+    if (!isAdmin && targetStatus === "pending") {
+      notifyAdmins(
+        "ახალი განაცხადი 📝",
+        `მომხმარებელმა (${full_name || username}) განაახლა პროფილი და ელოდება დადასტურებას.`,
+        { type: "PENDING_USER", userId },
+      );
+    }
 
     res.status(200).json({ success: true, data: userResult.rows[0] });
   } catch (error) {
