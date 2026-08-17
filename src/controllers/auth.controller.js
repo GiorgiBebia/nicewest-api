@@ -162,8 +162,6 @@ export const syncDevice = async (req, res) => {
       pushToken,
     } = req.body;
 
-    console.log("RECEIVED PUSH TOKEN ON BACKEND:", pushToken); // ლოგი შესამოწმებლად
-
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, 
