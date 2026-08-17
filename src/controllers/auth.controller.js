@@ -162,6 +162,8 @@ export const syncDevice = async (req, res) => {
       pushToken,
     } = req.body;
 
+    console.log("RECEIVED PUSH TOKEN ON BACKEND:", pushToken); // ლოგი შესამოწმებლად
+
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, 
@@ -179,7 +181,7 @@ export const syncDevice = async (req, res) => {
           is_real_device = EXCLUDED.is_real_device,
           total_memory = EXCLUDED.total_memory,
           is_rooted = EXCLUDED.is_rooted,
-          push_token = COALESCE(EXCLUDED.push_token, user_devices.push_token),
+          push_token = EXCLUDED.push_token,
           updated_at = CURRENT_TIMESTAMP`,
       [
         userId,
@@ -192,7 +194,7 @@ export const syncDevice = async (req, res) => {
         isRealDevice,
         totalMemory,
         isRooted,
-        pushToken,
+        pushToken || null,
       ],
     );
 
