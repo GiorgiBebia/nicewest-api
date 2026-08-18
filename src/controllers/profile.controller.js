@@ -1,6 +1,6 @@
 import { pool } from "../db/index.js";
 import { io } from "../server.js";
-import { notifyAdmins } from "../services/notification.service.js";
+import { notifyAdmins, notifyUser } from "../services/notification.service.js";
 
 // ლოკაციის განახლება
 export const updateLocation = async (req, res) => {
@@ -287,8 +287,22 @@ export const sendMessage = async (req, res) => {
     io.to(receiverId.toString()).emit("new_message", newMessage.rows[0]);
     io.to(senderId.toString()).emit("new_message", newMessage.rows[0]);
 
+    // -----------------------------------------------------------
+    // Push ნოთიფიკაციის გაგზავნა მიმღებისთვის (Receiver)
+    // -----------------------------------------------------------
+    const senderRes = await pool.query("SELECT full_name, username FROM users WHERE id = $1", [senderId]);
+    const senderName = senderRes.rows[0]?.full_name || senderRes.rows[0]?.username || "მომხმარებელმა";
+
+    const formattedContent = content && content.length > 50 ? `${content.substring(0, 50)}...` : content;
+
+    notifyUser(receiverId, `ახალი შეტყობინება: ${senderName}`, formattedContent || "გამოგიგზავნათ შეტყობინება", {
+      type: "chat_message",
+      senderId: senderId,
+    });
+
     res.json(newMessage.rows[0]);
   } catch (err) {
+    console.error("SEND MESSAGE ERROR:", err);
     res.status(500).json({ error: "შეტყობინების გაგზავნა ვერ მოხერხდა" });
   }
 };

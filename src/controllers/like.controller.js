@@ -1,4 +1,5 @@
 import { pool } from "../db/index.js";
+import { notifyUser } from "../services/notification.service.js";
 
 export const likeUser = async (req, res) => {
   try {
@@ -7,14 +8,14 @@ export const likeUser = async (req, res) => {
 
     if (!to) return res.status(400).json({ error: "Target user ID (to) is required" });
 
-    // 1. შევამოწმოთ და განვაახლოთ 12-საათიანი ტაიმერი (თუ გასულია 12 საათი)
-    const userRes = await pool.query("SELECT likes_left, last_like_reset FROM users WHERE id = $1", [from]);
+    // 1. შევამოწმოთ და განვაახლოთ 12-საათიანი ტაიმერი
+    const userRes = await pool.query("SELECT likes_left, last_like_reset, name FROM users WHERE id = $1", [from]);
 
     if (userRes.rows.length === 0) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
 
-    let { likes_left, last_like_reset } = userRes.rows[0];
+    let { likes_left, last_like_reset, name: senderName } = userRes.rows[0];
     const now = new Date();
     const lastReset = new Date(last_like_reset || 0);
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
@@ -25,13 +26,12 @@ export const likeUser = async (req, res) => {
       last_like_reset = now;
     }
 
-    // 2. ATOMIC UPDATE: ლაიქის ჩამოჭრა მხოლოდ იმ შემთხვევაში, თუ likes_left > 0
+    // 2. ATOMIC UPDATE: ლაიქის ჩამოჭრა
     const decrementRes = await pool.query(
       "UPDATE users SET likes_left = likes_left - 1 WHERE id = $1 AND likes_left > 0 RETURNING likes_left, last_like_reset",
       [from],
     );
 
-    // თუ არცერთი ჩანაწერი არ განახლდა, ესე იგი likes_left უკვე 0 იყო!
     if (decrementRes.rows.length === 0) {
       const nextReset = new Date(new Date(last_like_reset).getTime() + 12 * 60 * 60 * 1000);
       const minutesLeft = Math.max(1, Math.ceil((nextReset - now) / (1000 * 60)));
@@ -52,7 +52,29 @@ export const likeUser = async (req, res) => {
     const matchCheck = await pool.query("SELECT * FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [to, from]);
 
     if (matchCheck.rows.length > 0) {
+      // ჩავწეროთ match
       await pool.query("INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [from, to]);
+
+      // წამოვიღოთ მეორე მომხმარებლის სახელი ნოთიფიკაციისთვის
+      const targetUserRes = await pool.query("SELECT name FROM users WHERE id = $1", [to]);
+      const targetName = targetUserRes.rows[0]?.name || "ვინღაცამ";
+
+      // -----------------------------------------------------------
+      // Push ნოთიფიკაციების გაგზავნა ორივე მომხმარებლისთვის
+      // -----------------------------------------------------------
+
+      // 1. იმ მომხმარებელს, ვისაც ახლა დაალაიქეს (to)
+      notifyUser(to, "ახალი Match! 🎉", `შენ და ${senderName || "მომხმარებელმა"} მოეწონეთ ერთმანეთი!`, {
+        type: "match",
+        targetUserId: from,
+      });
+
+      // 2. იმ მომხმარებელს, ვინც ახლა დააჭირა ლაიქს (from)
+      notifyUser(from, "ახალი Match! 🎉", `შენ და ${targetName} მოეწონეთ ერთმანეთი!`, {
+        type: "match",
+        targetUserId: to,
+      });
+
       return res.json({ match: true, likes_left: updatedLikesLeft });
     }
 
