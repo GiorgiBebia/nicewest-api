@@ -14,6 +14,8 @@ if (!JWT_SECRET) {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+//ამ ხაზს მოგვიანებით წავშლი
+
 // დამხმარე ფუნქცია ტოკენების გენერაციისთვის (გასწორდა: accessToken-ს გაუწერა 15 წუთიანი ვადა)
 const generateTokens = (user) => {
   const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
