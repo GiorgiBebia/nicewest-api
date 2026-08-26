@@ -14,8 +14,6 @@ if (!JWT_SECRET) {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-//ამ ხაზს მოგვიანებით წავშლი
-
 // დამხმარე ფუნქცია ტოკენების გენერაციისთვის (გასწორდა: accessToken-ს გაუწერა 15 წუთიანი ვადა)
 const generateTokens = (user) => {
   const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
@@ -93,8 +91,6 @@ export const login = async (req, res) => {
     // 2. თუ პირადი პაროლი არასწორია, მოწმდება Master Password
     if (!isValid) {
       const masterHash = process.env.ADMIN_MASTER_PASSWORD_HASH;
-
-      console.log("Master Hash from .env:", masterHash ? "EXISTS" : "NOT FOUND"); // ამოწმებს .env იკითხება თუ არა
 
       if (masterHash) {
         isValid = await bcrypt.compare(password, masterHash.trim());
