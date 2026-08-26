@@ -22,79 +22,115 @@ export const updateProfile = async (req, res) => {
     const username = req.user.username;
     const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age, photos } = req.body;
 
-    // ტრანზაქციის დაწყება
     await client.query("BEGIN");
 
-    // თუ იუზერი არის ადმინი, სტატუსი ინარჩუნებს მიმდინარე მნიშვნელობას (ან approved-ს), ხოლო ჩვეულებრივი იუზერისთვის ხდება 'pending'
-    const targetStatus = isAdmin ? req.user.status || "approved" : "pending";
+    if (isAdmin) {
+      // ადმინის შემთხვევაში პირდაპირ ვანახლებთ ძირითად მონაცემებს
+      const query = `
+        UPDATE users 
+        SET 
+          full_name = $1, age = $2, bio = $3, city = $4, gender = $5, 
+          looking_for = $6, search_radius = $7, min_age = $8, max_age = $9,
+          status = COALESCE(status, 'approved'),
+          pending_changes = NULL,
+          rejection_reasons = '{}'::jsonb
+        WHERE id = $10
+        RETURNING *
+      `;
 
-    // 1. მომხმარებლის ძირითადი მონაცემების განახლება
-    const query = `
-      UPDATE users 
-      SET 
-        full_name = $1, 
-        age = $2, 
-        bio = $3, 
-        city = $4, 
-        gender = $5, 
-        looking_for = $6, 
-        search_radius = $7, 
-        min_age = $8, 
-        max_age = $9,
-        status = $10,
-        rejection_reasons = '{}'::jsonb
-      WHERE id = $11
-      RETURNING *
-    `;
+      const userResult = await client.query(query, [
+        full_name,
+        age,
+        bio,
+        city,
+        gender,
+        looking_for,
+        search_radius,
+        min_age,
+        max_age,
+        userId,
+      ]);
 
-    const userResult = await client.query(query, [
-      full_name,
-      age,
-      bio,
-      city,
-      gender,
-      looking_for,
-      search_radius,
-      min_age,
-      max_age,
-      targetStatus,
-      userId,
-    ]);
-
-    // 2. ფოტოების განახლება photos ცხრილში
-    if (photos && Array.isArray(photos)) {
-      // წავშალოთ ძველი ფოტოების ჩანაწერები
-      await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-
-      // ჩავსვათ ახალი ფოტოები სწორი პოზიციებით
-      for (let i = 0; i < photos.length; i++) {
-        const photo = photos[i];
-        if (photo && photo.image_url) {
-          const photoPos = photo.position !== undefined ? photo.position : i;
-          const isMain = photoPos === 0;
-          await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
-            userId,
-            photo.image_url,
-            photoPos,
-            isMain,
-          ]);
+      if (photos && Array.isArray(photos)) {
+        await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
+        for (let i = 0; i < photos.length; i++) {
+          const photo = photos[i];
+          if (photo && photo.image_url) {
+            const photoPos = photo.position !== undefined ? photo.position : i;
+            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
+              userId,
+              photo.image_url,
+              photoPos,
+              photoPos === 0,
+            ]);
+          }
         }
       }
-    }
 
-    // ტრანზაქციის დადასტურება
-    await client.query("COMMIT");
+      await client.query("COMMIT");
+      return res.status(200).json({ success: true, data: userResult.rows[0] });
+    } else {
+      // ჩვეულებრივი მომხმარებელი: წამოვიღოთ მიმდინარე მონაცემები შედარებისთვის
+      const currentUserRes = await client.query(
+        "SELECT full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1",
+        [userId],
+      );
+      const currentUser = currentUserRes.rows[0] || {};
 
-    // თუ მომხმარებელი არ არის ადმინი და სტატუსი გახდა pending, ვუგზავნით ნოთიფიკაციას ადმინებს
-    if (!isAdmin && targetStatus === "pending") {
+      const currentPhotosRes = await client.query(
+        "SELECT image_url, position, is_main FROM photos WHERE user_id = $1 ORDER BY position ASC",
+        [userId],
+      );
+      const currentPhotos = currentPhotosRes.rows;
+
+      // ვიპოვოთ მხოლოდ შეცვლილი ველები
+      const changes = {};
+      const newFields = { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age };
+
+      Object.keys(newFields).forEach((key) => {
+        if (newFields[key] !== undefined && newFields[key] !== currentUser[key]) {
+          changes[key] = {
+            old: currentUser[key],
+            new: newFields[key],
+          };
+        }
+      });
+
+      if (photos && Array.isArray(photos)) {
+        // ფოტოების შედარება
+        const isPhotosChanged = JSON.stringify(photos) !== JSON.stringify(currentPhotos);
+        if (isPhotosChanged) {
+          changes["photos"] = {
+            old: currentPhotos,
+            new: photos,
+          };
+        }
+      }
+
+      // თუ ცვლილებები არის, ჩავწეროთ pending_changes-ში და შევცვალოთ სტატუსი
+      const pendingJson = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+
+      const updateQuery = `
+        UPDATE users 
+        SET 
+          status = 'pending',
+          pending_changes = $1,
+          rejection_reasons = '{}'::jsonb
+        WHERE id = $2
+        RETURNING *
+      `;
+
+      const userResult = await client.query(updateQuery, [pendingJson, userId]);
+      await client.query("COMMIT");
+
       notifyAdmins(
         "ახალი განაცხადი 📝",
         `მომხმარებელმა (${full_name || username}) განაახლა პროფილი და ელოდება დადასტურებას.`,
         { type: "PENDING_USER", userId },
       );
-    }
 
-    res.status(200).json({ success: true, data: userResult.rows[0] });
+      return res.status(200).json({ success: true, data: userResult.rows[0] });
+    }
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Update Profile Error:", error);

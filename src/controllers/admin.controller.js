@@ -62,6 +62,7 @@ export const getPendingUsers = async (req, res) => {
         u.status, 
         u.created_at,
         u.rejection_reasons,
+        u.pending_changes,
         (
           SELECT image_url 
           FROM photos 
@@ -129,6 +130,7 @@ export const getPendingReports = async (req, res) => {
 };
 
 export const updateUserStatus = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { userId, rejectionReasons } = req.body;
 
@@ -140,20 +142,80 @@ export const updateUserStatus = async (req, res) => {
     const finalStatus = hasRejections ? "rejected" : "approved";
     const reasonsJson = JSON.stringify(rejectionReasons);
 
-    const query = `
-      UPDATE users 
-      SET status = $1, rejection_reasons = $2 
-      WHERE id = $3 
-      RETURNING id, status, rejection_reasons
-    `;
+    await client.query("BEGIN");
 
-    const result = await pool.query(query, [finalStatus, reasonsJson, userId]);
-
-    if (result.rowCount === 0) {
+    // წამოვიღოთ მომხმარებლის pending_changes
+    const userRes = await client.query("SELECT pending_changes FROM users WHERE id = $1", [userId]);
+    if (userRes.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // განხილვის დასრულების შემდეგ მომხმარებლისთვის ნოთიფიკაციის გაგზავნა
+    const pendingChanges = userRes.rows[0].pending_changes;
+
+    if (finalStatus === "approved" && pendingChanges) {
+      // თუ დამტკიცდა, pending_changes-დან ახალი მნიშვნელობები გადავიტანოთ ძირითად ველებში
+      const updates = [];
+      const values = [];
+      let paramIdx = 1;
+
+      const allowedFields = [
+        "full_name",
+        "age",
+        "bio",
+        "city",
+        "gender",
+        "looking_for",
+        "search_radius",
+        "min_age",
+        "max_age",
+      ];
+
+      allowedFields.forEach((field) => {
+        if (pendingChanges[field] && pendingChanges[field].new !== undefined) {
+          updates.push(`${field} = $${paramIdx}`);
+          values.push(pendingChanges[field].new);
+          paramIdx++;
+        }
+      });
+
+      if (updates.length > 0) {
+        values.push(userId);
+        const dynamicQuery = `UPDATE users SET ${updates.join(", ")} WHERE id = $${paramIdx}`;
+        await client.query(dynamicQuery, values);
+      }
+
+      // თუ ფოტოებიც შეიცვალა
+      if (pendingChanges.photos && pendingChanges.photos.new) {
+        const newPhotos = pendingChanges.photos.new;
+        await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
+        for (let i = 0; i < newPhotos.length; i++) {
+          const photo = newPhotos[i];
+          if (photo && photo.image_url) {
+            const photoPos = photo.position !== undefined ? photo.position : i;
+            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
+              userId,
+              photo.image_url,
+              photoPos,
+              photoPos === 0,
+            ]);
+          }
+        }
+      }
+    }
+
+    // სტატუსის განახლება და pending_changes-ის გასუფთავება
+    const updateStatusQuery = `
+      UPDATE users 
+      SET status = $1, rejection_reasons = $2, pending_changes = NULL 
+      WHERE id = $3 
+      RETURNING id, status, rejection_reasons
+    `;
+    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, userId]);
+
+    await client.query("COMMIT");
+
+    // ნოთიფიკაცია
     if (finalStatus === "approved") {
       notifyUser(
         userId,
@@ -176,8 +238,11 @@ export const updateUserStatus = async (req, res) => {
       data: result.rows[0],
     });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Update Status Error:", error);
     res.status(500).json({ success: false, message: error.message });
+  } finally {
+    client.release();
   }
 };
 
