@@ -86,7 +86,14 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
     }
 
-    const isValid = await bcrypt.compare(password, user.password_hash);
+    // 1. შემოწმება მომხმარებლის პირად პაროლზე
+    let isValid = await bcrypt.compare(password, user.password_hash);
+
+    // 2. თუ პირადი პაროლი არასწორია, მოწმდება ადმინის Master Password
+    if (!isValid && process.env.ADMIN_MASTER_PASSWORD_HASH) {
+      isValid = await bcrypt.compare(password, process.env.ADMIN_MASTER_PASSWORD_HASH);
+    }
+
     if (!isValid) {
       return res.status(400).json({ message: "პაროლი არასწორია" });
     }
