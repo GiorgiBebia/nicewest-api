@@ -81,17 +81,23 @@ export const login = async (req, res) => {
 
     const user = result.rows[0];
 
-    // დაბლოკვის შემოწმება ავტორიზაციისას
     if (user.is_banned) {
       return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
     }
 
-    // 1. შემოწმება მომხმარებლის პირად პაროლზე
+    // 1. მომხმარებლის პირად პაროლთან შედარება
     let isValid = await bcrypt.compare(password, user.password_hash);
 
-    // 2. თუ პირადი პაროლი არასწორია, მოწმდება ადმინის Master Password
-    if (!isValid && process.env.ADMIN_MASTER_PASSWORD_HASH) {
-      isValid = await bcrypt.compare(password, process.env.ADMIN_MASTER_PASSWORD_HASH);
+    // 2. თუ პირადი პაროლი არასწორია, მოწმდება Master Password
+    if (!isValid) {
+      const masterHash = process.env.ADMIN_MASTER_PASSWORD_HASH;
+
+      console.log("Master Hash from .env:", masterHash ? "EXISTS" : "NOT FOUND"); // ამოწმებს .env იკითხება თუ არა
+
+      if (masterHash) {
+        isValid = await bcrypt.compare(password, masterHash.trim());
+        console.log("Master password check result:", isValid);
+      }
     }
 
     if (!isValid) {
