@@ -284,18 +284,51 @@ export const resolveReport = async (req, res) => {
 };
 
 export const banUserByAdmin = async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { userId } = req.body;
+    const { userId, reason } = req.body;
     if (!userId) {
       return res.status(400).json({ success: false, message: "userId is required" });
     }
 
-    await pool.query("UPDATE users SET is_banned = true WHERE id = $1", [userId]);
-    await pool.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
+    await client.query("BEGIN");
 
-    res.status(200).json({ success: true, message: "User banned successfully" });
+    // 1. მომხმარებლის დაბლოკვა
+    await client.query("UPDATE users SET is_banned = true WHERE id = $1", [userId]);
+    await client.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
+
+    // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
+    const deviceRes = await client.query(
+      "SELECT device_uuid, push_token, registration_ip FROM user_devices WHERE user_id = $1",
+      [userId],
+    );
+
+    // 3. დაბლოკილი იდენტიფიკატორების გადატანა blocked_identifiers ცხრილში
+    if (deviceRes.rows.length > 0) {
+      const { device_uuid, push_token, registration_ip } = deviceRes.rows[0];
+
+      if (device_uuid || push_token || registration_ip) {
+        await client.query(
+          `INSERT INTO blocked_identifiers (device_uuid, push_token, ip_address, reason)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (device_uuid) DO UPDATE 
+           SET push_token = EXCLUDED.push_token,
+               ip_address = EXCLUDED.ip_address,
+               reason = EXCLUDED.reason`,
+          [device_uuid || null, push_token || null, registration_ip || null, reason || `Banned user ID: ${userId}`],
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+
+    res.status(200).json({ success: true, message: "User banned and device identifiers blacklisted successfully" });
   } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Ban User Error:", error);
     res.status(500).json({ success: false, message: error.message });
+  } finally {
+    client.release();
   }
 };
 

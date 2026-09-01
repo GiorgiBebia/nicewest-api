@@ -14,10 +14,9 @@ if (!JWT_SECRET) {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// დამხმარე ფუნქცია ტოკენების გენერაციისთვის (გასწორდა: accessToken-ს გაუწერა 15 წუთიანი ვადა)
+// დამხმარე ფუნქცია ტოკენების გენერაციისთვის
 const generateTokens = (user) => {
   const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
-
   const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: "30d" });
 
   return { accessToken, refreshToken };
@@ -25,7 +24,23 @@ const generateTokens = (user) => {
 
 export const register = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const {
+      username,
+      email,
+      password,
+      deviceUuid,
+      pushToken,
+      latitude,
+      longitude,
+      brand,
+      modelName,
+      osName,
+      osVersion,
+      deviceType,
+    } = req.body;
+
+    const rawIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
+    const clientIp = typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: "ყველა ველი აუცილებელია" });
@@ -38,6 +53,38 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
+    // --- 1. ბლოკირების შემოწმება (Device UUID & Push Token) ---
+    if (deviceUuid || pushToken) {
+      const blockedCheck = await pool.query(
+        `SELECT id FROM blocked_identifiers 
+         WHERE (device_uuid IS NOT NULL AND device_uuid = $1)
+            OR (push_token IS NOT NULL AND push_token = $2)`,
+        [deviceUuid || null, pushToken || null],
+      );
+
+      if (blockedCheck.rows.length > 0) {
+        return res.status(403).json({ message: "ამ მოწყობილობიდან რეგისტრაცია შეზღუდულია." });
+      }
+    }
+
+    // --- 2. სარეზერვო შემოწმება: IP + გეოლოკაცია დაბლოკილ მომხმარებლებთან ---
+    if (clientIp && latitude && longitude) {
+      const geoCheck = await pool.query(
+        `SELECT u.id FROM users u
+         JOIN user_devices ud ON u.id = ud.user_id
+         WHERE u.is_banned = true 
+           AND ud.registration_ip = $1
+           AND u.latitude BETWEEN $2 - 0.001 AND $2 + 0.001
+           AND u.longitude BETWEEN $3 - 0.001 AND $3 + 0.001`,
+        [clientIp, latitude, longitude],
+      );
+
+      if (geoCheck.rows.length > 0) {
+        return res.status(403).json({ message: "რეგისტრაცია შეჩერებულია უსაფრთხოების მიზეზით." });
+      }
+    }
+
+    // --- 3. არსებული მომხმარებლის შემოწმება ---
     const existing = await pool.query(
       "SELECT username, email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)",
       [usernameTrim, emailTrim],
@@ -53,13 +100,45 @@ export const register = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      `INSERT INTO users (username, email, password_hash)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (username, email, password_hash, latitude, longitude)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, username, email`,
-      [usernameTrim, emailTrim, hash],
+      [usernameTrim, emailTrim, hash, latitude || null, longitude || null],
     );
 
-    res.json({ success: true, user: result.rows[0] });
+    const newUser = result.rows[0];
+
+    // --- 4. მოწყობილობის მონაცემების ჩაწერა user_devices-ში ---
+    await pool.query(
+      `INSERT INTO user_devices (
+        user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+         brand = EXCLUDED.brand,
+         model_name = EXCLUDED.model_name,
+         os_name = EXCLUDED.os_name,
+         os_version = EXCLUDED.os_version,
+         device_type = EXCLUDED.device_type,
+         push_token = EXCLUDED.push_token,
+         device_uuid = EXCLUDED.device_uuid,
+         registration_ip = EXCLUDED.registration_ip,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        newUser.id,
+        brand || null,
+        modelName || null,
+        osName || null,
+        osVersion || null,
+        deviceType || null,
+        pushToken || null,
+        deviceUuid || null,
+        clientIp || null,
+      ],
+    );
+
+    res.json({ success: true, user: newUser });
   } catch (err) {
     console.error("REGISTER ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა რეგისტრაციისას" });
@@ -171,14 +250,18 @@ export const syncDevice = async (req, res) => {
       totalMemory,
       isRooted,
       pushToken,
+      deviceUuid,
     } = req.body;
+
+    const rawIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
+    const clientIp = typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
 
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, 
-        device_type, manufacturer, is_real_device, total_memory, is_rooted, push_token, updated_at
+        device_type, manufacturer, is_real_device, total_memory, is_rooted, push_token, device_uuid, registration_ip, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
        ON CONFLICT (user_id) 
        DO UPDATE SET 
           brand = EXCLUDED.brand,
@@ -191,6 +274,8 @@ export const syncDevice = async (req, res) => {
           total_memory = EXCLUDED.total_memory,
           is_rooted = EXCLUDED.is_rooted,
           push_token = EXCLUDED.push_token,
+          device_uuid = COALESCE(EXCLUDED.device_uuid, user_devices.device_uuid),
+          registration_ip = COALESCE(EXCLUDED.registration_ip, user_devices.registration_ip),
           updated_at = CURRENT_TIMESTAMP`,
       [
         userId,
@@ -204,6 +289,8 @@ export const syncDevice = async (req, res) => {
         totalMemory,
         isRooted,
         pushToken || null,
+        deviceUuid || null,
+        clientIp || null,
       ],
     );
 
