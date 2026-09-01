@@ -3,13 +3,25 @@ import { notifyUser } from "../services/notification.service.js";
 
 export const getStats = async (req, res) => {
   try {
-    const result = await pool.query("SELECT COUNT(*) as total FROM users");
-    const totalUsers = result.rows[0].total;
+    const query = `
+      SELECT 
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE status = 'approved') as approved,
+        COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
+        COUNT(*) FILTER (WHERE status = 'pending') as pending
+      FROM users
+    `;
+
+    const result = await pool.query(query);
+    const row = result.rows[0];
 
     res.status(200).json({
       success: true,
       data: {
-        totalUsers: parseInt(totalUsers),
+        totalUsers: parseInt(row.total || 0),
+        approvedUsers: parseInt(row.approved || 0),
+        rejectedUsers: parseInt(row.rejected || 0),
+        pendingUsers: parseInt(row.pending || 0),
       },
     });
   } catch (error) {
