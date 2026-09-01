@@ -79,6 +79,30 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
+    // --- 0. წაშლილი ანგარიშის 30-დღიანი შეზღუდვის შემოწმება ---
+    const deletionCheck = await pool.query(
+      `SELECT deleted_at FROM deleted_users 
+       WHERE LOWER(email) = LOWER($1) 
+          OR (device_uuid IS NOT NULL AND device_uuid = $2)
+          OR (push_token IS NOT NULL AND push_token = $3)
+       ORDER BY deleted_at DESC LIMIT 1`,
+      [emailTrim, deviceUuid || null, pushToken || null],
+    );
+
+    if (deletionCheck.rows.length > 0) {
+      const deletedAt = new Date(deletionCheck.rows[0].deleted_at);
+      const now = new Date();
+      const diffTime = Math.abs(now - deletedAt);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays <= 30) {
+        const remainingDays = 30 - diffDays + 1;
+        return res.status(403).json({
+          message: `ანგარიშის წაშლიდან 30 დღის განმავლობაში ახალი რეგისტრაცია შეზღუდულია. გთხოვთ დაელოდოთ ${remainingDays} დღე.`,
+        });
+      }
+    }
+
     // --- 1. ბლოკირების შემოწმება (Device UUID & Push Token) ---
     if (deviceUuid || pushToken) {
       const blockedCheck = await pool.query(
@@ -370,5 +394,66 @@ export const resetPassword = async (req, res) => {
   } catch (err) {
     console.error("RESET PASSWORD ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა პაროლის შეცვლისას" });
+  }
+};
+
+// --- ახალი ფუნქცია: ანგარიშის წაშლა და დაარქივება ---
+export const deleteAccount = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const userId = req.user.id;
+
+    // 1. მომხმარებლისა და მოწყობილობის ინფოს წამოღება
+    const userResult = await client.query(
+      `SELECT u.id, u.username, u.email, ud.device_uuid, ud.push_token, ud.registration_ip
+       FROM users u
+       LEFT JOIN user_devices ud ON u.id = ud.user_id
+       WHERE u.id = $1`,
+      [userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      client.release();
+      return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" });
+    }
+
+    const user = userResult.rows[0];
+
+    // ტრანზაქციის დაწყება
+    await client.query("BEGIN");
+
+    // 2. deleted_users ცხრილში ჩაწერა არქივისთვის
+    await client.query(
+      `INSERT INTO deleted_users (original_user_id, username, email, device_uuid, push_token, registration_ip, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [user.id, user.username, user.email, user.device_uuid, user.push_token, user.registration_ip],
+    );
+
+    // 3. დაკავშირებული მონაცემების წაშლა Foreign Key შეზღუდვების თავიდან ასაცილებლად
+    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM user_devices WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM user_locations WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM deleted_images WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM likes WHERE from_user_id = $1 OR to_user_id = $1", [userId]);
+    await client.query("DELETE FROM dislikes WHERE from_user_id = $1 OR to_user_id = $1", [userId]);
+    await client.query("DELETE FROM messages WHERE sender_id = $1 OR receiver_id = $1", [userId]);
+    await client.query("DELETE FROM matches WHERE user1_id = $1 OR user2_id = $1", [userId]);
+    await client.query("DELETE FROM blocks WHERE blocker_id = $1 OR blocked_id = $1", [userId]);
+    await client.query("DELETE FROM reports WHERE reporter_id = $1 OR reported_id = $1", [userId]);
+    await client.query("DELETE FROM user_ip_history WHERE user_id = $1", [userId]);
+
+    // 4. მომხმარებლის წაშლა users ცხრილიდან
+    await client.query("DELETE FROM users WHERE id = $1", [userId]);
+
+    await client.query("COMMIT");
+    client.release();
+
+    res.json({ success: true, message: "ანგარიში წარმატებით წაიშალა." });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    client.release();
+    console.error("DELETE ACCOUNT ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა ანგარიშის წაშლისას" });
   }
 };
