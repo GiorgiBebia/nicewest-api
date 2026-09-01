@@ -22,6 +22,32 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
+// დამხმარე ფუნქცია IP-ის ჩასაწერად/განასახლებლად ისტორიაში
+export const trackUserIp = async (userId, ipAddress) => {
+  if (!userId || !ipAddress) return;
+
+  try {
+    // 1. უახლესი IP-ს განახლება user_devices ცხრილში
+    await pool.query(
+      `UPDATE user_devices 
+       SET last_ip = $1, updated_at = CURRENT_TIMESTAMP 
+       WHERE user_id = $2`,
+      [ipAddress, userId],
+    );
+
+    // 2. IP-ის ჩაწერა ისტორიაში (თუ უკვე არსებობს, მხოლოდ განახლდება last_seen_at)
+    await pool.query(
+      `INSERT INTO user_ip_history (user_id, ip_address, first_seen_at, last_seen_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id, ip_address) 
+       DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP`,
+      [userId, ipAddress],
+    );
+  } catch (error) {
+    console.error("Error tracking user IP:", error);
+  }
+};
+
 export const register = async (req, res) => {
   try {
     const {
@@ -111,9 +137,9 @@ export const register = async (req, res) => {
     // --- 4. მოწყობილობის მონაცემების ჩაწერა user_devices-ში ---
     await pool.query(
       `INSERT INTO user_devices (
-        user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, updated_at
+        user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, CURRENT_TIMESTAMP)
        ON CONFLICT (user_id) 
        DO UPDATE SET 
          brand = EXCLUDED.brand,
@@ -124,6 +150,7 @@ export const register = async (req, res) => {
          push_token = EXCLUDED.push_token,
          device_uuid = EXCLUDED.device_uuid,
          registration_ip = EXCLUDED.registration_ip,
+         last_ip = EXCLUDED.last_ip,
          updated_at = CURRENT_TIMESTAMP`,
       [
         newUser.id,
@@ -137,6 +164,11 @@ export const register = async (req, res) => {
         clientIp || null,
       ],
     );
+
+    // --- 5. IP ისტორიის ჩაწერა ---
+    if (clientIp) {
+      await trackUserIp(newUser.id, clientIp);
+    }
 
     res.json({ success: true, user: newUser });
   } catch (err) {
@@ -179,6 +211,13 @@ export const login = async (req, res) => {
 
     if (!isValid) {
       return res.status(400).json({ message: "პაროლი არასწორია" });
+    }
+
+    // --- IP-ის თრექინგი შესვლისას ---
+    const rawIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
+    const clientIp = typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+    if (clientIp) {
+      await trackUserIp(user.id, clientIp);
     }
 
     const { accessToken, refreshToken } = generateTokens(user);
@@ -259,9 +298,9 @@ export const syncDevice = async (req, res) => {
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, 
-        device_type, manufacturer, is_real_device, total_memory, is_rooted, push_token, device_uuid, registration_ip, updated_at
+        device_type, manufacturer, is_real_device, total_memory, is_rooted, push_token, device_uuid, registration_ip, last_ip, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, CURRENT_TIMESTAMP)
        ON CONFLICT (user_id) 
        DO UPDATE SET 
           brand = EXCLUDED.brand,
@@ -276,6 +315,7 @@ export const syncDevice = async (req, res) => {
           push_token = EXCLUDED.push_token,
           device_uuid = COALESCE(EXCLUDED.device_uuid, user_devices.device_uuid),
           registration_ip = COALESCE(EXCLUDED.registration_ip, user_devices.registration_ip),
+          last_ip = COALESCE(EXCLUDED.last_ip, user_devices.last_ip),
           updated_at = CURRENT_TIMESTAMP`,
       [
         userId,
@@ -293,6 +333,11 @@ export const syncDevice = async (req, res) => {
         clientIp || null,
       ],
     );
+
+    // --- IP-ის თრექინგი აპლიკაციის გახსნისას/სინქრონიზაციისას ---
+    if (clientIp) {
+      await trackUserIp(userId, clientIp);
+    }
 
     res.json({ success: true, message: "მოწყობილობის მონაცემები და Push ტოკენი განახლდა" });
   } catch (err) {
