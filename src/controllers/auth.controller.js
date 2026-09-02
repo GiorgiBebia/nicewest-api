@@ -150,9 +150,9 @@ export const register = async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      `INSERT INTO users (username, email, password_hash, latitude, longitude)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, username, email`,
+      `INSERT INTO users (username, email, password_hash, latitude, longitude, gender, looking_for)
+   VALUES ($1, $2, $3, $4, $5, NULL, NULL)
+   RETURNING id, username, email`,
       [usernameTrim, emailTrim, hash, latitude || null, longitude || null],
     );
 
