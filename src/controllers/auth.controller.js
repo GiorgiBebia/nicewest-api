@@ -267,10 +267,24 @@ export const login = async (req, res) => {
   }
 };
 
-// --- სოციალური ავტორიზაცია (Google, Facebook, Instagram) ---
+// --- სოციალური ავტორიზაცია (Google, Facebook, Instagram) ავტომატური რეგისტრაციით ---
 export const socialLogin = async (req, res) => {
   try {
-    const { email, name, provider, socialId, deviceUuid, pushToken, latitude, longitude } = req.body;
+    const {
+      email,
+      name,
+      provider,
+      socialId,
+      deviceUuid,
+      pushToken,
+      latitude,
+      longitude,
+      brand,
+      modelName,
+      osName,
+      osVersion,
+      deviceType,
+    } = req.body;
 
     if (!email) {
       return res.status(400).json({ message: "Social login requires an email address." });
@@ -280,7 +294,7 @@ export const socialLogin = async (req, res) => {
     const rawIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
     const clientIp = typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
 
-    // 1. ბლოკირების შემოწმება
+    // 1. ბლოკირების შემოწმება (Device UUID & Push Token)
     if (deviceUuid || pushToken) {
       const blockedCheck = await pool.query(
         `SELECT id FROM blocked_identifiers 
@@ -304,10 +318,54 @@ export const socialLogin = async (req, res) => {
         return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
       }
     } else {
-      // 3. თუ მომხმარებელი არ არსებობს - ახლის შექმნა
-      const baseUsername = name ? name.toLowerCase().replace(/\s+/g, "_") : emailTrim.split("@")[0];
-      const uniqueUsername = `${baseUsername}_${Math.floor(1000 + Math.random() * 9000)}`;
+      // 3. თუ მომხმარებელი არ არსებობს - უსაფრთხოების შემოწმებები ახალი რეგისტრაციის წინ
 
+      // ა) წაშლილი ანგარიშის 30-დღიანი შეზღუდვის შემოწმება
+      const deletionCheck = await pool.query(
+        `SELECT deleted_at FROM deleted_users 
+         WHERE LOWER(email) = LOWER($1) 
+            OR (device_uuid IS NOT NULL AND device_uuid = $2)
+            OR (push_token IS NOT NULL AND push_token = $3)
+         ORDER BY deleted_at DESC LIMIT 1`,
+        [emailTrim, deviceUuid || null, pushToken || null],
+      );
+
+      if (deletionCheck.rows.length > 0) {
+        const deletedAt = new Date(deletionCheck.rows[0].deleted_at);
+        const now = new Date();
+        const diffTime = Math.abs(now - deletedAt);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays <= 30) {
+          const remainingDays = 30 - diffDays + 1;
+          return res.status(403).json({
+            message: `ანგარიშის წაშლიდან 30 დღის განმავლობაში ახალი რეგისტრაცია შეზღუდულია. გთხოვთ დაელოდოთ ${remainingDays} დღე.`,
+          });
+        }
+      }
+
+      // ბ) IP + გეოლოკაცია დაბლოკილ მომხმარებლებთან
+      if (clientIp && latitude && longitude) {
+        const geoCheck = await pool.query(
+          `SELECT u.id FROM users u
+           JOIN user_devices ud ON u.id = ud.user_id
+           WHERE u.is_banned = true 
+             AND ud.registration_ip = $1
+             AND u.latitude BETWEEN $2 - 0.001 AND $2 + 0.001
+             AND u.longitude BETWEEN $3 - 0.001 AND $3 + 0.001`,
+          [clientIp, latitude, longitude],
+        );
+
+        if (geoCheck.rows.length > 0) {
+          return res.status(403).json({ message: "რეგისტრაცია შეჩერებულია უსაფრთხოების მიზეზით." });
+        }
+      }
+
+      // გ) უნიკალური username-ის გენერაცია
+      const baseUsername = name ? name.toLowerCase().replace(/[^a-z0-9_]/g, "") : emailTrim.split("@")[0];
+      const uniqueUsername = `${baseUsername || "user"}_${Math.floor(1000 + Math.random() * 9000)}`;
+
+      // დ) ახალი მომხმარებლის შექმნა
       const insertResult = await pool.query(
         `INSERT INTO users (username, email, password_hash, full_name, latitude, longitude)
          VALUES ($1, $2, NULL, $3, $4, $5)
@@ -318,23 +376,42 @@ export const socialLogin = async (req, res) => {
       user = insertResult.rows[0];
     }
 
-    // 4. მოწყობილობის მონაცემების განახლება
+    // 4. მოწყობილობის მონაცემების ჩაწერა/განახლება user_devices-ში
     await pool.query(
-      `INSERT INTO user_devices (user_id, push_token, device_uuid, registration_ip, last_ip, updated_at)
-       VALUES ($1, $2, $3, $4, $4, CURRENT_TIMESTAMP)
+      `INSERT INTO user_devices (
+        user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, CURRENT_TIMESTAMP)
        ON CONFLICT (user_id) 
        DO UPDATE SET 
+         brand = COALESCE(EXCLUDED.brand, user_devices.brand),
+         model_name = COALESCE(EXCLUDED.model_name, user_devices.model_name),
+         os_name = COALESCE(EXCLUDED.os_name, user_devices.os_name),
+         os_version = COALESCE(EXCLUDED.os_version, user_devices.os_version),
+         device_type = COALESCE(EXCLUDED.device_type, user_devices.device_type),
          push_token = COALESCE(EXCLUDED.push_token, user_devices.push_token),
          device_uuid = COALESCE(EXCLUDED.device_uuid, user_devices.device_uuid),
          last_ip = EXCLUDED.last_ip,
          updated_at = CURRENT_TIMESTAMP`,
-      [user.id, pushToken || null, deviceUuid || null, clientIp || null],
+      [
+        user.id,
+        brand || null,
+        modelName || null,
+        osName || null,
+        osVersion || null,
+        deviceType || null,
+        pushToken || null,
+        deviceUuid || null,
+        clientIp || null,
+      ],
     );
 
+    // 5. IP ისტორიის ჩაწერა
     if (clientIp) {
       await trackUserIp(user.id, clientIp);
     }
 
+    // 6. JWT ტოკენების გენერაცია და სესიის შენახვა
     const { accessToken, refreshToken } = generateTokens(user);
 
     await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [user.id]);
@@ -488,7 +565,7 @@ export const resetPassword = async (req, res) => {
   }
 };
 
-// --- ახალი ფუნქცია: ანგარიშის წაშლა და დაარქივება ---
+// --- ანგარიშის წაშლა და დაარქივება ---
 export const deleteAccount = async (req, res) => {
   const client = await pool.connect();
   try {
