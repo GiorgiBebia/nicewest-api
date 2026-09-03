@@ -221,7 +221,10 @@ export const login = async (req, res) => {
     }
 
     // 1. მომხმარებლის პირად პაროლთან შედარება
-    let isValid = await bcrypt.compare(password, user.password_hash);
+    let isValid = false;
+    if (user.password_hash) {
+      isValid = await bcrypt.compare(password, user.password_hash);
+    }
 
     // 2. თუ პირადი პაროლი არასწორია, მოწმდება Master Password
     if (!isValid) {
@@ -261,6 +264,94 @@ export const login = async (req, res) => {
   } catch (err) {
     console.error("LOGIN ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა ავტორიზაციისას" });
+  }
+};
+
+// --- სოციალური ავტორიზაცია (Google, Facebook, Instagram) ---
+export const socialLogin = async (req, res) => {
+  try {
+    const { email, name, provider, socialId, deviceUuid, pushToken, latitude, longitude } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Social login requires an email address." });
+    }
+
+    const emailTrim = email.trim().toLowerCase();
+    const rawIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
+    const clientIp = typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+
+    // 1. ბლოკირების შემოწმება
+    if (deviceUuid || pushToken) {
+      const blockedCheck = await pool.query(
+        `SELECT id FROM blocked_identifiers 
+         WHERE (device_uuid IS NOT NULL AND device_uuid = $1)
+            OR (push_token IS NOT NULL AND push_token = $2)`,
+        [deviceUuid || null, pushToken || null],
+      );
+
+      if (blockedCheck.rows.length > 0) {
+        return res.status(403).json({ message: "ამ მოწყობილობიდან ავტორიზაცია შეზღუდულია." });
+      }
+    }
+
+    // 2. მომხმარებლის ძებნა ელფოსტით
+    let userResult = await pool.query("SELECT * FROM users WHERE LOWER(email) = LOWER($1)", [emailTrim]);
+    let user;
+
+    if (userResult.rows.length > 0) {
+      user = userResult.rows[0];
+      if (user.is_banned) {
+        return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
+      }
+    } else {
+      // 3. თუ მომხმარებელი არ არსებობს - ახლის შექმნა
+      const baseUsername = name ? name.toLowerCase().replace(/\s+/g, "_") : emailTrim.split("@")[0];
+      const uniqueUsername = `${baseUsername}_${Math.floor(1000 + Math.random() * 9000)}`;
+
+      const insertResult = await pool.query(
+        `INSERT INTO users (username, email, password_hash, full_name, latitude, longitude)
+         VALUES ($1, $2, NULL, $3, $4, $5)
+         RETURNING *`,
+        [uniqueUsername, emailTrim, name || null, latitude || null, longitude || null],
+      );
+
+      user = insertResult.rows[0];
+    }
+
+    // 4. მოწყობილობის მონაცემების განახლება
+    await pool.query(
+      `INSERT INTO user_devices (user_id, push_token, device_uuid, registration_ip, last_ip, updated_at)
+       VALUES ($1, $2, $3, $4, $4, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+         push_token = COALESCE(EXCLUDED.push_token, user_devices.push_token),
+         device_uuid = COALESCE(EXCLUDED.device_uuid, user_devices.device_uuid),
+         last_ip = EXCLUDED.last_ip,
+         updated_at = CURRENT_TIMESTAMP`,
+      [user.id, pushToken || null, deviceUuid || null, clientIp || null],
+    );
+
+    if (clientIp) {
+      await trackUserIp(user.id, clientIp);
+    }
+
+    const { accessToken, refreshToken } = generateTokens(user);
+
+    await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [user.id]);
+    await pool.query("INSERT INTO user_refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)", [
+      user.id,
+      refreshToken,
+      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    ]);
+
+    res.json({
+      token: accessToken,
+      refreshToken: refreshToken,
+      user: { id: user.id, username: user.username, email: user.email },
+    });
+  } catch (err) {
+    console.error("SOCIAL LOGIN ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა სოციალური ავტორიზაციისას" });
   }
 };
 
