@@ -16,7 +16,15 @@ if (!JWT_SECRET) {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// დამხმარე ფუნქცია ტოკენების გენერაციისთვის
+// Helper: Client IP Extraction
+const getClientIp = (req) => {
+  const rawIp =
+    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
+  if (Array.isArray(rawIp)) return rawIp[0].trim();
+  return rawIp.split(",")[0].trim();
+};
+
+// Helper: Token Generation
 const generateTokens = (user) => {
   const accessToken = jwt.sign(
     { id: user.id, username: user.username },
@@ -30,12 +38,11 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
-// დამხმარე ფუნქცია IP-ის ჩასაწერად/განასახლებლად ისტორიაში
+// Helper: IP Tracking
 export const trackUserIp = async (userId, ipAddress) => {
   if (!userId || !ipAddress) return;
 
   try {
-    // 1. უახლესი IP-ს განახლება user_devices ცხრილში
     await pool.query(
       `UPDATE user_devices 
        SET last_ip = $1, updated_at = CURRENT_TIMESTAMP 
@@ -43,7 +50,6 @@ export const trackUserIp = async (userId, ipAddress) => {
       [ipAddress, userId],
     );
 
-    // 2. IP-ის ჩაწერა ისტორიაში (თუ უკვე არსებობს, მხოლოდ განახლდება last_seen_at)
     await pool.query(
       `INSERT INTO user_ip_history (user_id, ip_address, first_seen_at, last_seen_at)
        VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -73,10 +79,7 @@ export const register = async (req, res) => {
       deviceType,
     } = req.body;
 
-    const rawIp =
-      req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
-    const clientIp =
-      typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+    const clientIp = getClientIp(req);
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: "ყველა ველი აუცილებელია" });
@@ -89,12 +92,12 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
-    // --- 0. წაშლილი ანგარიშის 30-დღიანი შეზღუდვის შემოწმება ---
+    // --- 0. წაშლილი ანგარიშის 30-დღიანი შეზღუდვა ---
     const deletionCheck = await pool.query(
       `SELECT deleted_at FROM deleted_users 
        WHERE LOWER(email) = LOWER($1) 
-          OR (device_uuid IS NOT NULL AND device_uuid = $2)
-          OR (push_token IS NOT NULL AND push_token = $3)
+          OR ($2::text IS NOT NULL AND device_uuid = $2)
+          OR ($3::text IS NOT NULL AND push_token = $3)
        ORDER BY deleted_at DESC LIMIT 1`,
       [emailTrim, deviceUuid || null, pushToken || null],
     );
@@ -103,10 +106,10 @@ export const register = async (req, res) => {
       const deletedAt = new Date(deletionCheck.rows[0].deleted_at);
       const now = new Date();
       const diffTime = Math.abs(now - deletedAt);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-      if (diffDays <= 30) {
-        const remainingDays = 30 - diffDays + 1;
+      if (diffDays < 30) {
+        const remainingDays = 30 - diffDays;
         return res.status(403).json({
           message: `ანგარიშის წაშლიდან 30 დღის განმავლობაში ახალი რეგისტრაცია შეზღუდულია. გთხოვთ დაელოდოთ ${remainingDays} დღე.`,
         });
@@ -117,8 +120,8 @@ export const register = async (req, res) => {
     if (deviceUuid || pushToken) {
       const blockedCheck = await pool.query(
         `SELECT id FROM blocked_identifiers 
-         WHERE (device_uuid IS NOT NULL AND device_uuid = $1)
-            OR (push_token IS NOT NULL AND push_token = $2)`,
+         WHERE ($1::text IS NOT NULL AND device_uuid = $1)
+            OR ($2::text IS NOT NULL AND push_token = $2)`,
         [deviceUuid || null, pushToken || null],
       );
 
@@ -129,7 +132,7 @@ export const register = async (req, res) => {
       }
     }
 
-    // --- 2. სარეზერვო შემოწმება: IP + გეოლოკაცია დაბლოკილ მომხმარებლებთან ---
+    // --- 2. IP + გეოლოკაცია დაბლოკილ მომხმარებლებთან ---
     if (clientIp && latitude && longitude) {
       const geoCheck = await pool.query(
         `SELECT u.id FROM users u
@@ -167,14 +170,14 @@ export const register = async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const result = await pool.query(
       `INSERT INTO users (username, email, password_hash, latitude, longitude, gender, looking_for)
-   VALUES ($1, $2, $3, $4, $5, NULL, NULL)
-   RETURNING id, username, email`,
+       VALUES ($1, $2, $3, $4, $5, NULL, NULL)
+       RETURNING id, username, email`,
       [usernameTrim, emailTrim, hash, latitude || null, longitude || null],
     );
 
     const newUser = result.rows[0];
 
-    // --- 4. მოწყობილობის მონაცემების ჩაწერა user_devices-ში ---
+    // --- 4. მოწყობილობის ჩაწერა ---
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
@@ -205,7 +208,7 @@ export const register = async (req, res) => {
       ],
     );
 
-    // --- 5. IP ისტორიის ჩაწერა ---
+    // --- 5. IP ისტორია ---
     if (clientIp) {
       await trackUserIp(newUser.id, clientIp);
     }
@@ -239,31 +242,24 @@ export const login = async (req, res) => {
       return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
     }
 
-    // 1. მომხმარებლის პირად პაროლთან შედარება
     let isValid = false;
     if (user.password_hash) {
       isValid = await bcrypt.compare(password, user.password_hash);
     }
 
-    // 2. თუ პირადი პაროლი არასწორია, მოწმდება Master Password
-    if (!isValid) {
-      const masterHash = process.env.ADMIN_MASTER_PASSWORD_HASH;
-
-      if (masterHash) {
-        isValid = await bcrypt.compare(password, masterHash.trim());
-        console.log("Master password check result:", isValid);
-      }
+    // Master Password შემოწმება (მხოლოდ იმ შემთხვევაში, თუ გარემოს ცვლადში მითითებულია)
+    if (!isValid && process.env.ADMIN_MASTER_PASSWORD_HASH) {
+      isValid = await bcrypt.compare(
+        password,
+        process.env.ADMIN_MASTER_PASSWORD_HASH.trim(),
+      );
     }
 
     if (!isValid) {
       return res.status(400).json({ message: "პაროლი არასწორია" });
     }
 
-    // --- IP-ის თრექინგი შესვლისას ---
-    const rawIp =
-      req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
-    const clientIp =
-      typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+    const clientIp = getClientIp(req);
     if (clientIp) {
       await trackUserIp(user.id, clientIp);
     }
@@ -289,14 +285,11 @@ export const login = async (req, res) => {
   }
 };
 
-// --- სოციალური ავტორიზაცია (Google, Facebook, Instagram) ავტომატური რეგისტრაციით ---
 export const socialLogin = async (req, res) => {
   try {
     const {
       email,
       name,
-      provider,
-      socialId,
       deviceUuid,
       pushToken,
       latitude,
@@ -308,8 +301,6 @@ export const socialLogin = async (req, res) => {
       deviceType,
     } = req.body;
 
-    console.log(req.body, "289 Line");
-
     if (!email) {
       return res
         .status(400)
@@ -317,21 +308,14 @@ export const socialLogin = async (req, res) => {
     }
 
     const emailTrim = email.trim().toLowerCase();
-    const rawIp =
-      req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
-    const clientIp =
-      typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+    const clientIp = getClientIp(req);
 
-    console.log(emailTrim, "325 Line");
-    console.log(rawIp, "326 Line");
-    console.log(clientIp, "325 Line");
-
-    // 1. ბლოკირების შემოწმება (Device UUID & Push Token)
+    // 1. ბლოკირების შემოწმება
     if (deviceUuid || pushToken) {
       const blockedCheck = await pool.query(
         `SELECT id FROM blocked_identifiers 
-         WHERE (device_uuid IS NOT NULL AND device_uuid = $1)
-            OR (push_token IS NOT NULL AND push_token = $2)`,
+         WHERE ($1::text IS NOT NULL AND device_uuid = $1)
+            OR ($2::text IS NOT NULL AND push_token = $2)`,
         [deviceUuid || null, pushToken || null],
       );
 
@@ -342,7 +326,7 @@ export const socialLogin = async (req, res) => {
       }
     }
 
-    // 2. მომხმარებლის ძებნა ელფოსტით
+    // 2. მომხმარებლის ძებნა
     let userResult = await pool.query(
       "SELECT * FROM users WHERE LOWER(email) = LOWER($1)",
       [emailTrim],
@@ -355,14 +339,12 @@ export const socialLogin = async (req, res) => {
         return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
       }
     } else {
-      // 3. თუ მომხმარებელი არ არსებობს - უსაფრთხოების შემოწმებები ახალი რეგისტრაციის წინ
-
-      // ა) წაშლილი ანგარიშის 30-დღიანი შეზღუდვის შემოწმება
+      // 3. ახალი რეგისტრაციის უსაფრთხოების შემოწმება
       const deletionCheck = await pool.query(
         `SELECT deleted_at FROM deleted_users 
          WHERE LOWER(email) = LOWER($1) 
-            OR (device_uuid IS NOT NULL AND device_uuid = $2)
-            OR (push_token IS NOT NULL AND push_token = $3)
+            OR ($2::text IS NOT NULL AND device_uuid = $2)
+            OR ($3::text IS NOT NULL AND push_token = $3)
          ORDER BY deleted_at DESC LIMIT 1`,
         [emailTrim, deviceUuid || null, pushToken || null],
       );
@@ -370,18 +352,18 @@ export const socialLogin = async (req, res) => {
       if (deletionCheck.rows.length > 0) {
         const deletedAt = new Date(deletionCheck.rows[0].deleted_at);
         const now = new Date();
-        const diffTime = Math.abs(now - deletedAt);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        const diffDays = Math.floor(
+          Math.abs(now - deletedAt) / (1000 * 60 * 60 * 24),
+        );
 
-        if (diffDays <= 30) {
-          const remainingDays = 30 - diffDays + 1;
+        if (diffDays < 30) {
+          const remainingDays = 30 - diffDays;
           return res.status(403).json({
             message: `ანგარიშის წაშლიდან 30 დღის განმავლობაში ახალი რეგისტრაცია შეზღუდულია. გთხოვთ დაელოდოთ ${remainingDays} დღე.`,
           });
         }
       }
 
-      // ბ) IP + გეოლოკაცია დაბლოკილ მომხმარებლებთან
       if (clientIp && latitude && longitude) {
         const geoCheck = await pool.query(
           `SELECT u.id FROM users u
@@ -400,13 +382,11 @@ export const socialLogin = async (req, res) => {
         }
       }
 
-      // გ) უნიკალური username-ის გენერაცია
       const baseUsername = name
         ? name.toLowerCase().replace(/[^a-z0-9_]/g, "")
         : emailTrim.split("@")[0];
       const uniqueUsername = `${baseUsername || "user"}_${Math.floor(1000 + Math.random() * 9000)}`;
 
-      // დ) ახალი მომხმარებლის შექმნა
       const insertResult = await pool.query(
         `INSERT INTO users (username, email, password_hash, full_name, latitude, longitude)
          VALUES ($1, $2, NULL, $3, $4, $5)
@@ -423,7 +403,7 @@ export const socialLogin = async (req, res) => {
       user = insertResult.rows[0];
     }
 
-    // 4. მოწყობილობის მონაცემების ჩაწერა/განახლება user_devices-ში
+    // 4. მოწყობილობის მონაცემების განახლება
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
@@ -453,12 +433,10 @@ export const socialLogin = async (req, res) => {
       ],
     );
 
-    // 5. IP ისტორიის ჩაწერა
     if (clientIp) {
       await trackUserIp(user.id, clientIp);
     }
 
-    // 6. JWT ტოკენების გენერაცია და სესიის შენახვა
     const { accessToken, refreshToken } = generateTokens(user);
 
     await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
@@ -507,7 +485,6 @@ export const refresh = async (req, res) => {
 
     if (!user) return res.status(403).json({ message: "User not found" });
 
-    // დაბლოკვის შემოწმება ტოკენის განახლებისას
     if (user.is_banned) {
       return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
     }
@@ -542,10 +519,7 @@ export const syncDevice = async (req, res) => {
       deviceUuid,
     } = req.body;
 
-    const rawIp =
-      req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
-    const clientIp =
-      typeof rawIp === "string" ? rawIp.split(",")[0].trim() : rawIp[0];
+    const clientIp = getClientIp(req);
 
     await pool.query(
       `INSERT INTO user_devices (
@@ -586,7 +560,6 @@ export const syncDevice = async (req, res) => {
       ],
     );
 
-    // --- IP-ის თრექინგი აპლიკაციის გახსნისას/სინქრონიზაციისას ---
     if (clientIp) {
       await trackUserIp(userId, clientIp);
     }
@@ -640,13 +613,11 @@ export const resetPassword = async (req, res) => {
   }
 };
 
-// --- ანგარიშის წაშლა და დაარქივება ---
 export const deleteAccount = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = req.user.id;
 
-    // 1. მომხმარებლისა და მოწყობილობის ინფოს წამოღება
     const userResult = await client.query(
       `SELECT u.id, u.username, u.email, ud.device_uuid, ud.push_token, ud.registration_ip
        FROM users u
@@ -662,10 +633,8 @@ export const deleteAccount = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // ტრანზაქციის დაწყება
     await client.query("BEGIN");
 
-    // 2. deleted_users ცხრილში ჩაწერა არქივისთვის
     await client.query(
       `INSERT INTO deleted_users (original_user_id, username, email, device_uuid, push_token, registration_ip, deleted_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
@@ -679,7 +648,7 @@ export const deleteAccount = async (req, res) => {
       ],
     );
 
-    // 3. დაკავშირებული მონაცემების წაშლა Foreign Key შეზღუდვების თავიდან ასაცილებლად
+    // დაკავშირებული მონაცემების წაშლა
     await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
       userId,
     ]);
@@ -719,7 +688,6 @@ export const deleteAccount = async (req, res) => {
       userId,
     ]);
 
-    // 4. მომხმარებლის წაშლა users ცხრილიდან
     await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
     await client.query("COMMIT");
