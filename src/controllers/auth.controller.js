@@ -339,71 +339,17 @@ export const socialLogin = async (req, res) => {
         return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
       }
     } else {
-      // 3. ახალი რეგისტრაციის უსაფრთხოების შემოწმება
-      const deletionCheck = await pool.query(
-        `SELECT deleted_at FROM deleted_users 
-         WHERE LOWER(email) = LOWER($1) 
-            OR ($2::text IS NOT NULL AND device_uuid = $2)
-            OR ($3::text IS NOT NULL AND push_token = $3)
-         ORDER BY deleted_at DESC LIMIT 1`,
-        [emailTrim, deviceUuid || null, pushToken || null],
-      );
-
-      if (deletionCheck.rows.length > 0) {
-        const deletedAt = new Date(deletionCheck.rows[0].deleted_at);
-        const now = new Date();
-        const diffDays = Math.floor(
-          Math.abs(now - deletedAt) / (1000 * 60 * 60 * 24),
-        );
-
-        if (diffDays < 30) {
-          const remainingDays = 30 - diffDays;
-          return res.status(403).json({
-            message: `ანგარიშის წაშლიდან 30 დღის განმავლობაში ახალი რეგისტრაცია შეზღუდულია. გთხოვთ დაელოდოთ ${remainingDays} დღე.`,
-          });
-        }
-      }
-
-      if (clientIp && latitude && longitude) {
-        const geoCheck = await pool.query(
-          `SELECT u.id FROM users u
-           JOIN user_devices ud ON u.id = ud.user_id
-           WHERE u.is_banned = true 
-             AND ud.registration_ip = $1
-             AND u.latitude BETWEEN $2 - 0.001 AND $2 + 0.001
-             AND u.longitude BETWEEN $3 - 0.001 AND $3 + 0.001`,
-          [clientIp, latitude, longitude],
-        );
-
-        if (geoCheck.rows.length > 0) {
-          return res
-            .status(403)
-            .json({ message: "რეგისტრაცია შეჩერებულია უსაფრთხოების მიზეზით." });
-        }
-      }
-
-      const baseUsername = name
-        ? name.toLowerCase().replace(/[^a-z0-9_]/g, "")
-        : emailTrim.split("@")[0];
-      const uniqueUsername = `${baseUsername || "user"}_${Math.floor(1000 + Math.random() * 9000)}`;
-
-      const insertResult = await pool.query(
-        `INSERT INTO users (username, email, password_hash, full_name, latitude, longitude)
-         VALUES ($1, $2, NULL, $3, $4, $5)
-         RETURNING *`,
-        [
-          uniqueUsername,
-          emailTrim,
-          name || null,
-          latitude || null,
-          longitude || null,
-        ],
-      );
-
-      user = insertResult.rows[0];
+      // 3. თუ ახალი მომხმარებელია, ვაბრუნებთ დროშას isNewUser: true (რომ ფრონტმა გადაიყვანოს რეგისტრაციაზე)
+      // შენიშვნა: თუ გინდათ რომ პირდაპირ შექმნას და არ გადაიყვანოს რეგისტრაციის ფორმაზე,
+      // მაშინ აქ დატოვეთ INSERT ლოგიკა.
+      return res.json({
+        isNewUser: true,
+        email: emailTrim,
+        name: name || "",
+      });
     }
 
-    // 4. მოწყობილობის მონაცემების განახლება
+    // 4. არსებული მომხმარებლის მოწყობილობის მონაცემების განახლება
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
