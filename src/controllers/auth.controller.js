@@ -1,7 +1,7 @@
 import bcrypt from "bcrypt";
-import { pool } from "../db/index.js";
-import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import jwt from "jsonwebtoken";
+import { pool } from "../db/index.js";
 
 dotenv.config();
 
@@ -81,8 +81,10 @@ export const register = async (req, res) => {
 
     const clientIp = getClientIp(req);
 
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: "ყველა ველი აუცილებელია" });
+    if (!username || !email) {
+      return res
+        .status(400)
+        .json({ message: "ყველა აუცილებელი ველი შევსებული უნდა იყოს" });
     }
 
     const usernameTrim = username.trim();
@@ -167,7 +169,7 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "ეს Email უკვე გამოყენებულია" });
     }
 
-    const hash = await bcrypt.hash(password, 10);
+    const hash = password ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
       `INSERT INTO users (username, email, password_hash, latitude, longitude, gender, looking_for)
        VALUES ($1, $2, $3, $4, $5, NULL, NULL)
@@ -223,8 +225,10 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ message: "ყველა ველი აუცილებელია" });
+    if (!username) {
+      return res
+        .status(400)
+        .json({ message: "მომხმარებლის სახელი აუცილებელია" });
     }
 
     const result = await pool.query(
@@ -243,12 +247,16 @@ export const login = async (req, res) => {
     }
 
     let isValid = false;
-    if (user.password_hash) {
+
+    // თუ მომხმარებელს არ აქვს პაროლი (Google-ით არის დარეგისტრირებული) ან პაროლი ცარიელია
+    if (!user.password_hash) {
+      isValid = true;
+    } else if (password) {
       isValid = await bcrypt.compare(password, user.password_hash);
     }
 
-    // Master Password შემოწმება (მხოლოდ იმ შემთხვევაში, თუ გარემოს ცვლადში მითითებულია)
-    if (!isValid && process.env.ADMIN_MASTER_PASSWORD_HASH) {
+    // Master Password შემოწმება
+    if (!isValid && password && process.env.ADMIN_MASTER_PASSWORD_HASH) {
       isValid = await bcrypt.compare(
         password,
         process.env.ADMIN_MASTER_PASSWORD_HASH.trim(),
@@ -339,9 +347,6 @@ export const socialLogin = async (req, res) => {
         return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია" });
       }
     } else {
-      // 3. თუ ახალი მომხმარებელია, ვაბრუნებთ დროშას isNewUser: true (რომ ფრონტმა გადაიყვანოს რეგისტრაციაზე)
-      // შენიშვნა: თუ გინდათ რომ პირდაპირ შექმნას და არ გადაიყვანოს რეგისტრაციის ფორმაზე,
-      // მაშინ აქ დატოვეთ INSERT ლოგიკა.
       return res.json({
         isNewUser: true,
         email: emailTrim,
