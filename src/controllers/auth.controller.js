@@ -248,14 +248,12 @@ export const login = async (req, res) => {
 
     let isValid = false;
 
-    // თუ მომხმარებელს არ აქვს პაროლი (Google-ით არის დარეგისტრირებული) ან პაროლი ცარიელია
     if (!user.password_hash) {
       isValid = true;
     } else if (password) {
       isValid = await bcrypt.compare(password, user.password_hash);
     }
 
-    // Master Password შემოწმება
     if (!isValid && password && process.env.ADMIN_MASTER_PASSWORD_HASH) {
       isValid = await bcrypt.compare(
         password,
@@ -282,10 +280,24 @@ export const login = async (req, res) => {
       [user.id, refreshToken, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)],
     );
 
+    // is_complete გამოთვლილია იმავე ლოგიკით, რასაც frontend (_layout.tsx) იყენებდა
+    // fallback-ად — ახლა ეს პირდაპირ ბრუნდება login-ის პასუხში, რომ frontend-მა
+    // აღარ დასჭირდეს ცალკე /profile/me request ამ ინფორმაციისთვის.
+    const isComplete = Boolean(
+      user.gender && user.birth_date && user.city && user.looking_for,
+    );
+
     res.json({
       token: accessToken,
       refreshToken: refreshToken,
-      user: { id: user.id, username: user.username, email: user.email },
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        is_complete: isComplete,
+        status: user.status,
+        is_admin: user.is_admin,
+      },
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err);
@@ -318,7 +330,6 @@ export const socialLogin = async (req, res) => {
     const emailTrim = email.trim().toLowerCase();
     const clientIp = getClientIp(req);
 
-    // 1. ბლოკირების შემოწმება
     if (deviceUuid || pushToken) {
       const blockedCheck = await pool.query(
         `SELECT id FROM blocked_identifiers 
@@ -334,7 +345,6 @@ export const socialLogin = async (req, res) => {
       }
     }
 
-    // 2. მომხმარებლის ძებნა
     let userResult = await pool.query(
       "SELECT * FROM users WHERE LOWER(email) = LOWER($1)",
       [emailTrim],
@@ -354,7 +364,6 @@ export const socialLogin = async (req, res) => {
       });
     }
 
-    // 4. არსებული მომხმარებლის მოწყობილობის მონაცემების განახლება
     await pool.query(
       `INSERT INTO user_devices (
         user_id, brand, model_name, os_name, os_version, device_type, push_token, device_uuid, registration_ip, last_ip, updated_at
@@ -398,10 +407,21 @@ export const socialLogin = async (req, res) => {
       [user.id, refreshToken, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)],
     );
 
+    const isComplete = Boolean(
+      user.gender && user.birth_date && user.city && user.looking_for,
+    );
+
     res.json({
       token: accessToken,
       refreshToken: refreshToken,
-      user: { id: user.id, username: user.username, email: user.email },
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        is_complete: isComplete,
+        status: user.status,
+        is_admin: user.is_admin,
+      },
     });
   } catch (err) {
     console.error("SOCIAL LOGIN ERROR:", err);
