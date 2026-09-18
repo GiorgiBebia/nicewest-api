@@ -8,14 +8,25 @@ export const likeUser = async (req, res) => {
 
     if (!to) return res.status(400).json({ error: "Target user ID (to) is required" });
 
-    // 1. შევამოწმოთ და განვაახლოთ 12-საათიანი ტაიმერი
-    const userRes = await pool.query("SELECT likes_left, last_like_reset, name FROM users WHERE id = $1", [from]);
+    // 1. შევამოწმოთ, უკვე დალაიქებული ხომ არ ჰყავს ეს მომხმარებელი
+    const existingLike = await pool.query("SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [
+      from,
+      to,
+    ]);
+
+    if (existingLike.rows.length > 0) {
+      const userRes = await pool.query("SELECT likes_left FROM users WHERE id = $1", [from]);
+      return res.json({ match: false, likes_left: userRes.rows[0]?.likes_left ?? 0 });
+    }
+
+    // 2. შევამოწმოთ და განვაახლოთ 12-საათიანი ტაიმერი (full_name-ის გამოყენებით)
+    const userRes = await pool.query("SELECT likes_left, last_like_reset, full_name FROM users WHERE id = $1", [from]);
 
     if (userRes.rows.length === 0) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
 
-    let { likes_left, last_like_reset, name: senderName } = userRes.rows[0];
+    let { likes_left, last_like_reset, full_name: senderName } = userRes.rows[0];
     const now = new Date();
     const lastReset = new Date(last_like_reset || 0);
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
@@ -26,7 +37,7 @@ export const likeUser = async (req, res) => {
       last_like_reset = now;
     }
 
-    // 2. ATOMIC UPDATE: ლაიქის ჩამოჭრა
+    // 3. ATOMIC UPDATE: ლაიქის ჩამოჭრა
     const decrementRes = await pool.query(
       "UPDATE users SET likes_left = likes_left - 1 WHERE id = $1 AND likes_left > 0 RETURNING likes_left, last_like_reset",
       [from],
@@ -45,31 +56,26 @@ export const likeUser = async (req, res) => {
 
     const updatedLikesLeft = decrementRes.rows[0].likes_left;
 
-    // 3. ლაიქის ჩაწერა likes ცხრილში
-    await pool.query("INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [from, to]);
+    // 4. ლაიქის ჩაწერა likes ცხრილში
+    await pool.query("INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2)", [from, to]);
 
-    // 4. შემოწმება MATCH-ზე
+    // 5. შემოწმება MATCH-ზე
     const matchCheck = await pool.query("SELECT * FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [to, from]);
 
     if (matchCheck.rows.length > 0) {
       // ჩავწეროთ match
-      await pool.query("INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [from, to]);
+      await pool.query("INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2)", [from, to]);
 
-      // წამოვიღოთ მეორე მომხმარებლის სახელი ნოთიფიკაციისთვის
-      const targetUserRes = await pool.query("SELECT name FROM users WHERE id = $1", [to]);
-      const targetName = targetUserRes.rows[0]?.name || "ვინღაცამ";
+      // წამოვიღოთ მეორე მომხმარებლის სახელი (full_name) ნოთიფიკაციისთვის
+      const targetUserRes = await pool.query("SELECT full_name FROM users WHERE id = $1", [to]);
+      const targetName = targetUserRes.rows[0]?.full_name || "მომხმარებელმა";
 
-      // -----------------------------------------------------------
-      // Push ნოთიფიკაციების გაგზავნა ორივე მომხმარებლისთვის
-      // -----------------------------------------------------------
-
-      // 1. იმ მომხმარებელს, ვისაც ახლა დაალაიქეს (to)
+      // Push ნოთიფიკაციების გაგზავნა
       notifyUser(to, "ახალი Match! 🎉", `შენ და ${senderName || "მომხმარებელმა"} მოეწონეთ ერთმანეთი!`, {
         type: "match",
         targetUserId: from,
       });
 
-      // 2. იმ მომხმარებელს, ვინც ახლა დააჭირა ლაიქს (from)
       notifyUser(from, "ახალი Match! 🎉", `შენ და ${targetName} მოეწონეთ ერთმანეთი!`, {
         type: "match",
         targetUserId: to,
@@ -92,10 +98,15 @@ export const dislikeUser = async (req, res) => {
 
     if (!to) return res.status(400).json({ error: "Target user ID (to) is required" });
 
-    await pool.query(
-      "INSERT INTO dislikes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT (from_user_id, to_user_id) DO NOTHING",
-      [from, to],
-    );
+    // შევამოწმოთ, უკვე დისლაიქებული ხომ არ არის ON CONFLICT-ის შეცდომის თავიდან ასაცილებლად
+    const existing = await pool.query("SELECT id FROM dislikes WHERE from_user_id = $1 AND to_user_id = $2", [
+      from,
+      to,
+    ]);
+
+    if (existing.rows.length === 0) {
+      await pool.query("INSERT INTO dislikes (from_user_id, to_user_id) VALUES ($1, $2)", [from, to]);
+    }
 
     res.json({ success: true });
   } catch (err) {
