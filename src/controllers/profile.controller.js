@@ -7,7 +7,10 @@ export const updateLocation = async (req, res) => {
   try {
     const userId = req.user.id;
     const { latitude, longitude } = req.body;
-    await pool.query("UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3", [latitude, longitude, userId]);
+    await pool.query(
+      "UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3",
+      [latitude, longitude, userId],
+    );
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Location update failed" });
@@ -19,13 +22,25 @@ export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const isAdmin = req.user.is_admin;
-    const username = req.user.username;
-    const { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age, photos } = req.body;
+    const authUsername = req.user.username; // JWT token-იდან წამოღებული username
+
+    // username-ს იგნორირებას ვუკეთებთ req.body-დან
+    const {
+      full_name,
+      age,
+      bio,
+      city,
+      gender,
+      looking_for,
+      search_radius,
+      min_age,
+      max_age,
+      photos,
+    } = req.body;
 
     await client.query("BEGIN");
 
     if (isAdmin) {
-      // ადმინის შემთხვევაში პირდაპირ ვანახლებთ ძირითად მონაცემებს
       const query = `
         UPDATE users 
         SET 
@@ -57,12 +72,10 @@ export const updateProfile = async (req, res) => {
           const photo = photos[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
-            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
-              userId,
-              photo.image_url,
-              photoPos,
-              photoPos === 0,
-            ]);
+            await client.query(
+              "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
+              [userId, photo.image_url, photoPos, photoPos === 0],
+            );
           }
         }
       }
@@ -70,7 +83,6 @@ export const updateProfile = async (req, res) => {
       await client.query("COMMIT");
       return res.status(200).json({ success: true, data: userResult.rows[0] });
     } else {
-      // ჩვეულებრივი მომხმარებელი: წამოვიღოთ მიმდინარე მონაცემები შედარებისთვის
       const currentUserRes = await client.query(
         "SELECT full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1",
         [userId],
@@ -83,12 +95,24 @@ export const updateProfile = async (req, res) => {
       );
       const currentPhotos = currentPhotosRes.rows;
 
-      // ვიპოვოთ მხოლოდ შეცვლილი ველები
       const changes = {};
-      const newFields = { full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age };
+      const newFields = {
+        full_name,
+        age,
+        bio,
+        city,
+        gender,
+        looking_for,
+        search_radius,
+        min_age,
+        max_age,
+      };
 
       Object.keys(newFields).forEach((key) => {
-        if (newFields[key] !== undefined && newFields[key] !== currentUser[key]) {
+        if (
+          newFields[key] !== undefined &&
+          newFields[key] !== currentUser[key]
+        ) {
           changes[key] = {
             old: currentUser[key],
             new: newFields[key],
@@ -97,8 +121,8 @@ export const updateProfile = async (req, res) => {
       });
 
       if (photos && Array.isArray(photos)) {
-        // ფოტოების შედარება
-        const isPhotosChanged = JSON.stringify(photos) !== JSON.stringify(currentPhotos);
+        const isPhotosChanged =
+          JSON.stringify(photos) !== JSON.stringify(currentPhotos);
         if (isPhotosChanged) {
           changes["photos"] = {
             old: currentPhotos,
@@ -107,8 +131,8 @@ export const updateProfile = async (req, res) => {
         }
       }
 
-      // თუ ცვლილებები არის, ჩავწეროთ pending_changes-ში და შევცვალოთ სტატუსი
-      const pendingJson = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+      const pendingJson =
+        Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
 
       const updateQuery = `
         UPDATE users 
@@ -125,7 +149,7 @@ export const updateProfile = async (req, res) => {
 
       notifyAdmins(
         "ახალი განაცხადი 📝",
-        `მომხმარებელმა (${full_name || username}) განაახლა პროფილი და ელოდება დადასტურებას.`,
+        `მომხმარებელმა (${full_name || authUsername}) განაახლა პროფილი და ელოდება დადასტურებას.`,
         { type: "PENDING_USER", userId },
       );
 
@@ -226,7 +250,15 @@ export const getDiscovery = async (req, res) => {
       GROUP BY f.id, f.full_name, f.age, f.city, f.bio, f.interests, f.distance
       ORDER BY f.distance ASC 
       LIMIT 20`,
-      [userId, me.latitude, me.longitude, me.search_radius, me.min_age, me.max_age, me.looking_for],
+      [
+        userId,
+        me.latitude,
+        me.longitude,
+        me.search_radius,
+        me.min_age,
+        me.max_age,
+        me.looking_for,
+      ],
     );
     res.json(discoveryResult.rows);
   } catch (err) {
@@ -239,19 +271,22 @@ export const addLike = async (req, res) => {
   const { targetUserId } = req.body;
   const myId = req.user.id;
   try {
-    await pool.query("INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
-      myId,
-      targetUserId,
-    ]);
-    const reverseLike = await pool.query("SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [
-      targetUserId,
-      myId,
-    ]);
+    await pool.query(
+      "INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [myId, targetUserId],
+    );
+    const reverseLike = await pool.query(
+      "SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2",
+      [targetUserId, myId],
+    );
     let isMatch = false;
     if (reverseLike.rows.length > 0) {
       isMatch = true;
       const [p1, p2] = [myId, targetUserId].sort();
-      await pool.query("INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [p1, p2]);
+      await pool.query(
+        "INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [p1, p2],
+      );
     }
     res.json({ success: true, isMatch });
   } catch (err) {
@@ -305,7 +340,11 @@ export const sendMessage = async (req, res) => {
     );
 
     if (blockCheck.rows.length > 0) {
-      return res.status(403).json({ error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია." });
+      return res
+        .status(403)
+        .json({
+          error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია.",
+        });
     }
 
     const matchResult = await pool.query(
@@ -313,7 +352,10 @@ export const sendMessage = async (req, res) => {
       [senderId, receiverId],
     );
 
-    if (matchResult.rows.length === 0) return res.status(403).json({ error: "თქვენ არ გაქვთ Match ამ მომხმარებელთან" });
+    if (matchResult.rows.length === 0)
+      return res
+        .status(403)
+        .json({ error: "თქვენ არ გაქვთ Match ამ მომხმარებელთან" });
 
     const newMessage = await pool.query(
       "INSERT INTO messages (match_id, sender_id, receiver_id, text) VALUES ($1, $2, $3, $4) RETURNING *",
@@ -326,15 +368,29 @@ export const sendMessage = async (req, res) => {
     // -----------------------------------------------------------
     // Push ნოთიფიკაციის გაგზავნა მიმღებისთვის (Receiver)
     // -----------------------------------------------------------
-    const senderRes = await pool.query("SELECT full_name, username FROM users WHERE id = $1", [senderId]);
-    const senderName = senderRes.rows[0]?.full_name || senderRes.rows[0]?.username || "მომხმარებელმა";
+    const senderRes = await pool.query(
+      "SELECT full_name, username FROM users WHERE id = $1",
+      [senderId],
+    );
+    const senderName =
+      senderRes.rows[0]?.full_name ||
+      senderRes.rows[0]?.username ||
+      "მომხმარებელმა";
 
-    const formattedContent = content && content.length > 50 ? `${content.substring(0, 50)}...` : content;
+    const formattedContent =
+      content && content.length > 50
+        ? `${content.substring(0, 50)}...`
+        : content;
 
-    notifyUser(receiverId, `ახალი შეტყობინება: ${senderName}`, formattedContent || "გამოგიგზავნათ შეტყობინება", {
-      type: "chat_message",
-      senderId: senderId,
-    });
+    notifyUser(
+      receiverId,
+      `ახალი შეტყობინება: ${senderName}`,
+      formattedContent || "გამოგიგზავნათ შეტყობინება",
+      {
+        type: "chat_message",
+        senderId: senderId,
+      },
+    );
 
     res.json(newMessage.rows[0]);
   } catch (err) {
@@ -394,7 +450,9 @@ export const getUserProfile = async (req, res) => {
     });
   } catch (err) {
     console.error("GET_USER_PROFILE ERROR:", err);
-    res.status(500).json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
+    res
+      .status(500)
+      .json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
   }
 };
 
@@ -404,15 +462,15 @@ export const reportUser = async (req, res) => {
     const { reportedUserId, reason, details } = req.body;
 
     if (!reportedUserId || !reason) {
-      return res.status(400).json({ error: "reportedUserId და reason აუცილებელია" });
+      return res
+        .status(400)
+        .json({ error: "reportedUserId და reason აუცილებელია" });
     }
 
-    await pool.query("INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)", [
-      reporterId,
-      reportedUserId,
-      reason,
-      details || "",
-    ]);
+    await pool.query(
+      "INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)",
+      [reporterId, reportedUserId, reason, details || ""],
+    );
 
     res.json({ success: true, message: "რეპორტი წარმატებით გაიგზავნა" });
   } catch (err) {
@@ -434,10 +492,10 @@ export const blockUser = async (req, res) => {
       return res.status(400).json({ error: "საკუთარ თავს ვერ დაბლოკავთ" });
     }
 
-    await pool.query("INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
-      blockerId,
-      blockedUserId,
-    ]);
+    await pool.query(
+      "INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [blockerId, blockedUserId],
+    );
 
     await pool.query(
       `DELETE FROM matches 

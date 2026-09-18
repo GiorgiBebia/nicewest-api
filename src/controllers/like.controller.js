@@ -92,10 +92,15 @@ export const dislikeUser = async (req, res) => {
 
     if (!to) return res.status(400).json({ error: "Target user ID (to) is required" });
 
-    await pool.query(
-      "INSERT INTO dislikes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT (from_user_id, to_user_id) DO NOTHING",
-      [from, to],
-    );
+    // შევამოწმოთ უკვე არსებობს თუ არა დისლაიქი, რათა დუპლიკატი არ ჩაიწეროს
+    const existing = await pool.query("SELECT id FROM dislikes WHERE from_user_id = $1 AND to_user_id = $2", [
+      from,
+      to,
+    ]);
+
+    if (existing.rows.length === 0) {
+      await pool.query("INSERT INTO dislikes (from_user_id, to_user_id) VALUES ($1, $2)", [from, to]);
+    }
 
     res.json({ success: true });
   } catch (err) {
