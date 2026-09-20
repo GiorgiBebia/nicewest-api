@@ -75,6 +75,8 @@ export const getPendingUsers = async (req, res) => {
         u.created_at,
         u.rejection_reasons,
         u.pending_changes,
+        u.reviewed_by,
+        u.reviewed_at,
         (
           SELECT image_url 
           FROM photos 
@@ -145,6 +147,7 @@ export const updateUserStatus = async (req, res) => {
   const client = await pool.connect();
   try {
     const { userId, rejectionReasons } = req.body;
+    const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
 
     if (!userId || !rejectionReasons) {
       return res.status(400).json({ success: false, message: "userId and rejectionReasons are required" });
@@ -216,14 +219,18 @@ export const updateUserStatus = async (req, res) => {
       }
     }
 
-    // სტატუსის განახლება და pending_changes-ის გასუფთავება
+    // სტატუსის, rejection_reasons-ის, reviewed_by-ისა და reviewed_at-ის განახლება
     const updateStatusQuery = `
       UPDATE users 
-      SET status = $1, rejection_reasons = $2, pending_changes = NULL 
-      WHERE id = $3 
-      RETURNING id, status, rejection_reasons
+      SET status = $1, 
+          rejection_reasons = $2, 
+          pending_changes = NULL,
+          reviewed_by = $3,
+          reviewed_at = NOW()
+      WHERE id = $4 
+      RETURNING id, status, rejection_reasons, reviewed_by, reviewed_at
     `;
-    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, userId]);
+    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, adminId, userId]);
 
     await client.query("COMMIT");
 
