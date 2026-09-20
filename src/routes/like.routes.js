@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { likeUser, dislikeUser, getLikesStatus } from "../controllers/like.controller.js";
+import { likeUser, dislikeUser, getLikesStatus, getUsersWhoLikedMe } from "../controllers/like.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 
 const router = Router();
