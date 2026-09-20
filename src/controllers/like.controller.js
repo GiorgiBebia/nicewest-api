@@ -140,3 +140,45 @@ export const getLikesStatus = async (req, res) => {
     res.status(500).json({ error: "სტატუსის წამოღება დაფეილდა" });
   }
 };
+
+// წამოიღებს ყველა მომხმარებელს, რომელმაც დაალაიქა ავტორიზებული იუზერი
+export const getUsersWhoLikedMe = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const query = `
+      SELECT 
+        u.id, 
+        u.full_name, 
+        u.age, 
+        u.city, 
+        u.bio, 
+        u.interests,
+        COALESCE(
+          JSON_AGG(
+            JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position, 'is_main', p.is_main) 
+            ORDER BY p.position ASC
+          ) FILTER (WHERE p.id IS NOT NULL), '[]'
+        ) AS photos
+      FROM likes l
+      JOIN users u ON l.from_user_id = u.id
+      LEFT JOIN photos p ON u.id = p.user_id
+      WHERE l.to_user_id = $1
+        -- გამოვრიცხოთ ისინი, ვინც ავტორმა უკვე დაალაიქა (უკვე Match-ია)
+        AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
+        -- გამოვრიცხოთ ისინი, ვინც ავტორმა უკვე დისლაიქი გაუკეთა
+        AND u.id NOT IN (SELECT to_user_id FROM dislikes WHERE from_user_id = $1)
+        -- გამოვრიცხოთ დაბლოკილები
+        AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
+        AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
+      GROUP BY u.id, u.full_name, u.age, u.city, u.bio, u.interests, l.created_at
+      ORDER BY l.created_at DESC;
+    `;
+
+    const result = await pool.query(query, [userId]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET USERS WHO LIKED ME ERROR:", err);
+    res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
+  }
+};

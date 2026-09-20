@@ -7,5 +7,5 @@ const router = Router();
 router.post("/", authMiddleware, likeUser);
 router.post("/dislike", authMiddleware, dislikeUser);
 router.get("/status", authMiddleware, getLikesStatus); // დარჩენილი ლაიქების რაოდენობის შესამოწმებლად
-
+router.get("/received", authMiddleware, getUsersWhoLikedMe);
 export default router;
