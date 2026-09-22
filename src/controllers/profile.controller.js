@@ -28,6 +28,7 @@ export const updateProfile = async (req, res) => {
     const {
       full_name,
       age,
+      birth_date,
       bio,
       city,
       gender,
@@ -44,18 +45,19 @@ export const updateProfile = async (req, res) => {
       const query = `
         UPDATE users 
         SET 
-          full_name = $1, age = $2, bio = $3, city = $4, gender = $5, 
-          looking_for = $6, search_radius = $7, min_age = $8, max_age = $9,
+          full_name = $1, age = $2, birth_date = $3, bio = $4, city = $5, gender = $6, 
+          looking_for = $7, search_radius = $8, min_age = $9, max_age = $10,
           status = COALESCE(status, 'approved'),
           pending_changes = NULL,
           rejection_reasons = '{}'::jsonb
-        WHERE id = $10
+        WHERE id = $11
         RETURNING *
       `;
 
       const userResult = await client.query(query, [
         full_name,
         age,
+        birth_date,
         bio,
         city,
         gender,
@@ -84,7 +86,7 @@ export const updateProfile = async (req, res) => {
       return res.status(200).json({ success: true, data: userResult.rows[0] });
     } else {
       const currentUserRes = await client.query(
-        "SELECT full_name, age, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1",
+        "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1",
         [userId],
       );
       const currentUser = currentUserRes.rows[0] || {};
@@ -99,6 +101,7 @@ export const updateProfile = async (req, res) => {
       const newFields = {
         full_name,
         age,
+        birth_date,
         bio,
         city,
         gender,
@@ -169,7 +172,7 @@ export const getMe = async (req, res) => {
     const userId = req.user.id;
 
     const userResult = await pool.query(
-      "SELECT id, username, email, full_name, bio, gender, looking_for, city, age, search_radius, min_age, max_age, interests, latitude, longitude, is_admin, status, rejection_reasons FROM users WHERE id=$1",
+      "SELECT id, username, email, full_name, bio, gender, looking_for, city, age, birth_date, search_radius, min_age, max_age, interests, latitude, longitude, is_admin, status, rejection_reasons FROM users WHERE id=$1",
       [userId],
     );
 
@@ -187,7 +190,7 @@ export const getMe = async (req, res) => {
 
     const validation = {
       hasFullName: !!user.full_name,
-      hasAge: !!user.age,
+      hasAge: !!(user.age || user.birth_date),
       hasCity: !!user.city,
       hasGender: !!user.gender,
       hasBio: !!(user.bio && user.bio.trim().length >= 5),
@@ -340,11 +343,9 @@ export const sendMessage = async (req, res) => {
     );
 
     if (blockCheck.rows.length > 0) {
-      return res
-        .status(403)
-        .json({
-          error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია.",
-        });
+      return res.status(403).json({
+        error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია.",
+      });
     }
 
     const matchResult = await pool.query(
@@ -365,9 +366,6 @@ export const sendMessage = async (req, res) => {
     io.to(receiverId.toString()).emit("new_message", newMessage.rows[0]);
     io.to(senderId.toString()).emit("new_message", newMessage.rows[0]);
 
-    // -----------------------------------------------------------
-    // Push ნოთიფიკაციის გაგზავნა მიმღებისთვის (Receiver)
-    // -----------------------------------------------------------
     const senderRes = await pool.query(
       "SELECT full_name, username FROM users WHERE id = $1",
       [senderId],
