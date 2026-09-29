@@ -61,10 +61,10 @@ export const searchUsers = async (req, res) => {
 
 export const getPendingUsers = async (req, res) => {
   try {
-    const { type } = req.query; // 'all' ან 'requests'
+    const { type, gender } = req.query; // type: 'all' | 'requests', gender: 'all' | 'male' | 'female'
 
     let query = `
-      SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, 
+      SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
              u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
              COALESCE(
                json_agg(
@@ -81,9 +81,14 @@ export const getPendingUsers = async (req, res) => {
       WHERE u.status = 'pending'
     `;
 
-    // თუ მოთხოვნილია მხოლოდ "მოთხოვნები" (პროფილის შევსება/შენახვა დაწერილი)
+    // ტიპის ფილტრი (ყველა vs მოთხოვნები)
     if (type === "requests") {
       query += ` AND u.pending_changes IS NOT NULL AND u.pending_changes::text != '{}' AND u.pending_changes::text != 'null'`;
+    }
+
+    // სქესის ფილტრი
+    if (gender && gender !== "all") {
+      query += ` AND u.gender = '${gender}'`;
     }
 
     query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
@@ -140,12 +145,10 @@ export const updateUserStatus = async (req, res) => {
     const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
 
     if (!userId || !rejectionReasons) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "userId and rejectionReasons are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "userId and rejectionReasons are required",
+      });
     }
 
     const hasRejections = Object.values(rejectionReasons).some(
@@ -364,12 +367,10 @@ export const banUserByAdmin = async (req, res) => {
 
     await client.query("COMMIT");
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "User banned and device identifiers blacklisted successfully",
-      });
+    res.status(200).json({
+      success: true,
+      message: "User banned and device identifiers blacklisted successfully",
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Ban User Error:", error);
@@ -384,12 +385,10 @@ export const getChatHistoryForAdmin = async (req, res) => {
     const { user1, user2 } = req.query;
 
     if (!user1 || !user2) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "user1 and user2 parameters are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "user1 and user2 parameters are required",
+      });
     }
 
     const query = `
@@ -435,12 +434,10 @@ export const sendPushNotification = async (req, res) => {
     const tokens = result.rows.map((row) => row.push_token);
 
     if (tokens.length === 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "No active push tokens found for specified criteria",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "No active push tokens found for specified criteria",
+      });
     }
 
     const messages = tokens.map((token) => ({
