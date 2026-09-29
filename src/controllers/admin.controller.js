@@ -469,3 +469,47 @@ export const sendPushNotification = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+export const getAdminStats = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        -- რეგისტრირებული (სულ)
+        COUNT(*) AS total_users,
+        COUNT(*) FILTER (WHERE gender = 'male') AS total_males,
+        COUNT(*) FILTER (WHERE gender = 'female') AS total_females,
+
+        -- ავტორიზებული / დადასტურებული (Approved)
+        COUNT(*) FILTER (WHERE status = 'approved') AS approved_users,
+        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'male') AS approved_males,
+        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'female') AS approved_females,
+
+        -- მოლოდინის რეჟიმში (Pending)
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending_users
+      FROM users;
+    `;
+
+    const result = await pool.query(query);
+    const stats = result.rows[0];
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        total: {
+          all: parseInt(stats.total_users || 0),
+          males: parseInt(stats.total_males || 0),
+          females: parseInt(stats.total_females || 0),
+        },
+        approved: {
+          all: parseInt(stats.approved_users || 0),
+          males: parseInt(stats.approved_males || 0),
+          females: parseInt(stats.approved_females || 0),
+        },
+        pending: parseInt(stats.pending_users || 0),
+      },
+    });
+  } catch (error) {
+    console.error("Get Admin Stats Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
