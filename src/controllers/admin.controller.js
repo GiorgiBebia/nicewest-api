@@ -61,52 +61,42 @@ export const searchUsers = async (req, res) => {
 
 export const getPendingUsers = async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        u.id, 
-        u.username, 
-        u.full_name, 
-        u.email, 
-        u.bio, 
-        u.city, 
-        u.age, 
-        u.birth_date, 
-        u.status, 
-        u.created_at,
-        u.rejection_reasons,
-        u.pending_changes,
-        u.reviewed_by,
-        u.reviewed_at,
-        (
-          SELECT image_url 
-          FROM photos 
-          WHERE user_id = u.id AND (position = 0 OR is_main = true)
-          LIMIT 1
-        ) AS profile_image,
-        COALESCE(
-          (
-            SELECT json_agg(
-              json_build_object(
-                'id', ph.id,
-                'image_url', ph.image_url,
-                'position', ph.position,
-                'is_main', ph.is_main
-              )
-            ) 
-            FROM photos ph 
-            WHERE ph.user_id = u.id
-          ), '[]'::json
-        ) AS photos
+    const { type } = req.query; // 'all' ან 'requests'
+
+    let query = `
+      SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, 
+             u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'id', p.id,
+                   'image_url', p.image_url,
+                   'is_main', p.is_main,
+                   'position', p.position
+                 ) ORDER BY p.position ASC
+               ) FILTER (WHERE p.id IS NOT NULL), '[]'
+             ) AS photos
       FROM users u
+      LEFT JOIN photos p ON u.id = p.user_id
       WHERE u.status = 'pending'
-      ORDER BY u.created_at DESC
     `;
 
+    // თუ მოთხოვნილია მხოლოდ "მოთხოვნები" (პროფილის შევსება/შენახვა დაწერილი)
+    if (type === "requests") {
+      query += ` AND u.pending_changes IS NOT NULL AND u.pending_changes::text != '{}' AND u.pending_changes::text != 'null'`;
+    }
+
+    query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
+
     const result = await pool.query(query);
-    res.status(200).json({ success: true, data: result.rows });
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows,
+    });
   } catch (error) {
     console.error("Get Pending Users Error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -150,20 +140,32 @@ export const updateUserStatus = async (req, res) => {
     const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
 
     if (!userId || !rejectionReasons) {
-      return res.status(400).json({ success: false, message: "userId and rejectionReasons are required" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "userId and rejectionReasons are required",
+        });
     }
 
-    const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
+    const hasRejections = Object.values(rejectionReasons).some(
+      (value) => value === true,
+    );
     const finalStatus = hasRejections ? "rejected" : "approved";
     const reasonsJson = JSON.stringify(rejectionReasons);
 
     await client.query("BEGIN");
 
     // წამოვიღოთ მომხმარებლის pending_changes
-    const userRes = await client.query("SELECT pending_changes FROM users WHERE id = $1", [userId]);
+    const userRes = await client.query(
+      "SELECT pending_changes FROM users WHERE id = $1",
+      [userId],
+    );
     if (userRes.rowCount === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     const pendingChanges = userRes.rows[0].pending_changes;
@@ -208,12 +210,10 @@ export const updateUserStatus = async (req, res) => {
           const photo = newPhotos[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
-            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
-              userId,
-              photo.image_url,
-              photoPos,
-              photoPos === 0,
-            ]);
+            await client.query(
+              "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
+              [userId, photo.image_url, photoPos, photoPos === 0],
+            );
           }
         }
       }
@@ -230,7 +230,12 @@ export const updateUserStatus = async (req, res) => {
       WHERE id = $4 
       RETURNING id, status, rejection_reasons, reviewed_by, reviewed_at
     `;
-    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, adminId, userId]);
+    const result = await client.query(updateStatusQuery, [
+      finalStatus,
+      reasonsJson,
+      adminId,
+      userId,
+    ]);
 
     await client.query("COMMIT");
 
@@ -292,11 +297,17 @@ export const resolveReport = async (req, res) => {
   try {
     const { reportId } = req.body;
     if (!reportId) {
-      return res.status(400).json({ success: false, message: "reportId is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "reportId is required" });
     }
 
-    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [reportId]);
-    res.status(200).json({ success: true, message: "Report resolved successfully" });
+    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [
+      reportId,
+    ]);
+    res
+      .status(200)
+      .json({ success: true, message: "Report resolved successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -307,14 +318,21 @@ export const banUserByAdmin = async (req, res) => {
   try {
     const { userId, reason } = req.body;
     if (!userId) {
-      return res.status(400).json({ success: false, message: "userId is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "userId is required" });
     }
 
     await client.query("BEGIN");
 
     // 1. მომხმარებლის დაბლოკვა
-    await client.query("UPDATE users SET is_banned = true WHERE id = $1", [userId]);
-    await client.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
+    await client.query("UPDATE users SET is_banned = true WHERE id = $1", [
+      userId,
+    ]);
+    await client.query(
+      "UPDATE reports SET status = 'resolved' WHERE reported_id = $1",
+      [userId],
+    );
 
     // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
     const deviceRes = await client.query(
@@ -334,14 +352,24 @@ export const banUserByAdmin = async (req, res) => {
            SET push_token = EXCLUDED.push_token,
                ip_address = EXCLUDED.ip_address,
                reason = EXCLUDED.reason`,
-          [device_uuid || null, push_token || null, registration_ip || null, reason || `Banned user ID: ${userId}`],
+          [
+            device_uuid || null,
+            push_token || null,
+            registration_ip || null,
+            reason || `Banned user ID: ${userId}`,
+          ],
         );
       }
     }
 
     await client.query("COMMIT");
 
-    res.status(200).json({ success: true, message: "User banned and device identifiers blacklisted successfully" });
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "User banned and device identifiers blacklisted successfully",
+      });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Ban User Error:", error);
@@ -356,7 +384,12 @@ export const getChatHistoryForAdmin = async (req, res) => {
     const { user1, user2 } = req.query;
 
     if (!user1 || !user2) {
-      return res.status(400).json({ success: false, message: "user1 and user2 parameters are required" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "user1 and user2 parameters are required",
+        });
     }
 
     const query = `
@@ -384,10 +417,13 @@ export const sendPushNotification = async (req, res) => {
     const { title, body, userIds, sendToAll } = req.body;
 
     if (!title || !body) {
-      return res.status(400).json({ success: false, message: "title and body are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "title and body are required" });
     }
 
-    let query = "SELECT push_token FROM user_devices WHERE push_token IS NOT NULL AND push_token != ''";
+    let query =
+      "SELECT push_token FROM user_devices WHERE push_token IS NOT NULL AND push_token != ''";
     let queryParams = [];
 
     if (!sendToAll && Array.isArray(userIds) && userIds.length > 0) {
@@ -399,7 +435,12 @@ export const sendPushNotification = async (req, res) => {
     const tokens = result.rows.map((row) => row.push_token);
 
     if (tokens.length === 0) {
-      return res.status(400).json({ success: false, message: "No active push tokens found for specified criteria" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "No active push tokens found for specified criteria",
+        });
     }
 
     const messages = tokens.map((token) => ({
