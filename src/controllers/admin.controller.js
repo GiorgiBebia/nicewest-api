@@ -5,26 +5,57 @@ export const getStats = async (req, res) => {
   try {
     const query = `
       SELECT 
-        COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'approved') as approved,
-        COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
-        COUNT(*) FILTER (WHERE status = 'pending') as pending
-      FROM users
+        -- რეგისტრირებული (სულ)
+        COUNT(*) AS total_users,
+        COUNT(*) FILTER (WHERE gender = 'male') AS total_males,
+        COUNT(*) FILTER (WHERE gender = 'female') AS total_females,
+
+        -- ავტორიზებული / დადასტურებული (Approved)
+        COUNT(*) FILTER (WHERE status = 'approved') AS approved_users,
+        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'male') AS approved_males,
+        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'female') AS approved_females,
+
+        -- უარყოფილი (Rejected)
+        COUNT(*) FILTER (WHERE status = 'rejected') AS rejected_users,
+
+        -- მოლოდინის რეჟიმში (Pending)
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending_users
+      FROM users;
     `;
 
     const result = await pool.query(query);
-    const row = result.rows[0];
+    const stats = result.rows[0];
 
     res.status(200).json({
       success: true,
       data: {
-        totalUsers: parseInt(row.total || 0),
-        approvedUsers: parseInt(row.approved || 0),
-        rejectedUsers: parseInt(row.rejected || 0),
-        pendingUsers: parseInt(row.pending || 0),
+        // ძირითადი ველები (Frontend-ის თავსებადობისთვის)
+        totalUsers: parseInt(stats.total_users || 0),
+        totalMales: parseInt(stats.total_males || 0),
+        totalFemales: parseInt(stats.total_females || 0),
+
+        approvedUsers: parseInt(stats.approved_users || 0),
+        approvedMales: parseInt(stats.approved_males || 0),
+        approvedFemales: parseInt(stats.approved_females || 0),
+
+        rejectedUsers: parseInt(stats.rejected_users || 0),
+        pendingUsers: parseInt(stats.pending_users || 0),
+
+        // ობიექტის სახითაც (ყოველი შემთხვევისთვის)
+        total: {
+          all: parseInt(stats.total_users || 0),
+          males: parseInt(stats.total_males || 0),
+          females: parseInt(stats.total_females || 0),
+        },
+        approved: {
+          all: parseInt(stats.approved_users || 0),
+          males: parseInt(stats.approved_males || 0),
+          females: parseInt(stats.approved_females || 0),
+        },
       },
     });
   } catch (error) {
+    console.error("Get Stats Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -467,49 +498,5 @@ export const sendPushNotification = async (req, res) => {
   } catch (error) {
     console.error("Send Push Notification Error:", error);
     res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-export const getAdminStats = async (req, res) => {
-  try {
-    const query = `
-      SELECT 
-        -- რეგისტრირებული (სულ)
-        COUNT(*) AS total_users,
-        COUNT(*) FILTER (WHERE gender = 'male') AS total_males,
-        COUNT(*) FILTER (WHERE gender = 'female') AS total_females,
-
-        -- ავტორიზებული / დადასტურებული (Approved)
-        COUNT(*) FILTER (WHERE status = 'approved') AS approved_users,
-        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'male') AS approved_males,
-        COUNT(*) FILTER (WHERE status = 'approved' AND gender = 'female') AS approved_females,
-
-        -- მოლოდინის რეჟიმში (Pending)
-        COUNT(*) FILTER (WHERE status = 'pending') AS pending_users
-      FROM users;
-    `;
-
-    const result = await pool.query(query);
-    const stats = result.rows[0];
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        total: {
-          all: parseInt(stats.total_users || 0),
-          males: parseInt(stats.total_males || 0),
-          females: parseInt(stats.total_females || 0),
-        },
-        approved: {
-          all: parseInt(stats.approved_users || 0),
-          males: parseInt(stats.approved_males || 0),
-          females: parseInt(stats.approved_females || 0),
-        },
-        pending: parseInt(stats.pending_users || 0),
-      },
-    });
-  } catch (error) {
-    console.error("Get Admin Stats Error:", error);
-    return res.status(500).json({ success: false, message: error.message });
   }
 };

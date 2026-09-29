@@ -9,7 +9,6 @@ import {
   banUserByAdmin, // ახალი
   getChatHistoryForAdmin,
   sendPushNotification,
-  getAdminStats,
 } from "../controllers/admin.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import { isAdmin } from "../middleware/admin.middleware.js";
@@ -43,7 +42,5 @@ router.post(
   isAdmin,
   sendPushNotification,
 );
-
-router.get("/admin/stats", getAdminStats);
 
 export default router;
