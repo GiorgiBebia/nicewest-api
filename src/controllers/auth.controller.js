@@ -231,9 +231,24 @@ export const login = async (req, res) => {
         .json({ message: "მომხმარებლის სახელი აუცილებელია" });
     }
 
+    const usernameTrim = username.trim();
+
+    // 1. შემოწმება: ხომ არ არის მომხმარებელი წაშლილთა/არქივის ცხრილში?
+    const deletedCheck = await pool.query(
+      "SELECT id FROM deleted_users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)",
+      [usernameTrim],
+    );
+
+    if (deletedCheck.rows.length > 0) {
+      return res
+        .status(403)
+        .json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
+    }
+
+    // 2. ძირითადი იუზერის ძებნა
     const result = await pool.query(
       "SELECT * FROM users WHERE LOWER(username) = LOWER($1)",
-      [username.trim()],
+      [usernameTrim],
     );
 
     if (result.rows.length === 0) {
@@ -280,9 +295,6 @@ export const login = async (req, res) => {
       [user.id, refreshToken, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)],
     );
 
-    // is_complete გამოთვლილია იმავე ლოგიკით, რასაც frontend (_layout.tsx) იყენებდა
-    // fallback-ად — ახლა ეს პირდაპირ ბრუნდება login-ის პასუხში, რომ frontend-მა
-    // აღარ დასჭირდეს ცალკე /profile/me request ამ ინფორმაციისთვის.
     const isComplete = Boolean(
       user.gender && user.birth_date && user.city && user.looking_for,
     );
@@ -328,6 +340,19 @@ export const socialLogin = async (req, res) => {
     }
 
     const emailTrim = email.trim().toLowerCase();
+
+    // შემოწმება: ხომ არ არის წაშლილი ანგარიში?
+    const deletedCheck = await pool.query(
+      "SELECT id FROM deleted_users WHERE LOWER(email) = LOWER($1)",
+      [emailTrim],
+    );
+
+    if (deletedCheck.rows.length > 0) {
+      return res
+        .status(403)
+        .json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
+    }
+
     const clientIp = getClientIp(req);
 
     if (deviceUuid || pushToken) {
