@@ -589,37 +589,9 @@ export const deleteAccount = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const userResult = await client.query(
-      `SELECT u.id, u.username, u.email, ud.device_uuid, ud.push_token, ud.registration_ip
-       FROM users u
-       LEFT JOIN user_devices ud ON u.id = ud.user_id
-       WHERE u.id = $1`,
-      [userId],
-    );
-
-    if (userResult.rows.length === 0) {
-      client.release();
-      return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" });
-    }
-
-    const user = userResult.rows[0];
-
     await client.query("BEGIN");
 
-    await client.query(
-      `INSERT INTO deleted_users (original_user_id, username, email, device_uuid, push_token, registration_ip, deleted_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-      [
-        user.id,
-        user.username,
-        user.email,
-        user.device_uuid,
-        user.push_token,
-        user.registration_ip,
-      ],
-    );
-
-    // დაკავშირებული მონაცემების წაშლა
+    // 1. დაკავშირებული დამხმარე ცხრილების გაწმენდა
     await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
       userId,
     ]);
@@ -628,9 +600,6 @@ export const deleteAccount = async (req, res) => {
       userId,
     ]);
     await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-    await client.query("DELETE FROM deleted_images WHERE user_id = $1", [
-      userId,
-    ]);
     await client.query(
       "DELETE FROM likes WHERE from_user_id = $1 OR to_user_id = $1",
       [userId],
@@ -659,12 +628,18 @@ export const deleteAccount = async (req, res) => {
       userId,
     ]);
 
+    // 2. ამ DELETE-ის გაშვებისას ავტომატურად ამოქმედდება archive_user_full_data ტრიგერი,
+    // რომელიც მონაცემებს დააარქივებს deleted_users, deleted_photos, deleted_likes და deleted_messages ცხრილებში
+    // და ბოლოს წაშლის იუზერს users ცხრილიდან!
     await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
     await client.query("COMMIT");
     client.release();
 
-    res.json({ success: true, message: "ანგარიში წარმატებით წაიშალა." });
+    res.json({
+      success: true,
+      message: "ანგარიში წარმატებით წაიშალა და გადავიდა არქივში.",
+    });
   } catch (err) {
     await client.query("ROLLBACK");
     client.release();
