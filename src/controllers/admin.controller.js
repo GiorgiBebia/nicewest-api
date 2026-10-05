@@ -29,7 +29,6 @@ export const getStats = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        // ძირითადი ველები (Frontend-ის თავსებადობისთვის)
         totalUsers: parseInt(stats.total_users || 0),
         totalMales: parseInt(stats.total_males || 0),
         totalFemales: parseInt(stats.total_females || 0),
@@ -41,7 +40,6 @@ export const getStats = async (req, res) => {
         rejectedUsers: parseInt(stats.rejected_users || 0),
         pendingUsers: parseInt(stats.pending_users || 0),
 
-        // ობიექტის სახითაც (ყოველი შემთხვევისთვის)
         total: {
           all: parseInt(stats.total_users || 0),
           males: parseInt(stats.total_males || 0),
@@ -92,7 +90,7 @@ export const searchUsers = async (req, res) => {
 
 export const getPendingUsers = async (req, res) => {
   try {
-    const { type, gender } = req.query; // type: 'all' | 'requests', gender: 'all' | 'male' | 'female'
+    const { type, gender } = req.query;
 
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
@@ -112,12 +110,10 @@ export const getPendingUsers = async (req, res) => {
       WHERE u.status = 'pending'
     `;
 
-    // ტიპის ფილტრი (ყველა vs მოთხოვნები)
     if (type === "requests") {
       query += ` AND u.pending_changes IS NOT NULL AND u.pending_changes::text != '{}' AND u.pending_changes::text != 'null'`;
     }
 
-    // სქესის ფილტრი
     if (gender && gender !== "all") {
       query += ` AND u.gender = '${gender}'`;
     }
@@ -173,7 +169,7 @@ export const updateUserStatus = async (req, res) => {
   const client = await pool.connect();
   try {
     const { userId, rejectionReasons } = req.body;
-    const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
+    const adminId = req.user?.id || req.user?.userId;
 
     if (!userId || !rejectionReasons) {
       return res.status(400).json({
@@ -182,15 +178,19 @@ export const updateUserStatus = async (req, res) => {
       });
     }
 
-    const hasRejections = Object.values(rejectionReasons).some(
-      (value) => value === true,
+    // შემოწმება: არის თუ არა რაიმე ხარვეზი მონიშნული (Boolean ველები ან rejectedPhotos მასივი)
+    const hasRejections = Object.entries(rejectionReasons).some(
+      ([key, value]) => {
+        if (Array.isArray(value)) return value.length > 0;
+        return value === true;
+      },
     );
+
     const finalStatus = hasRejections ? "rejected" : "approved";
     const reasonsJson = JSON.stringify(rejectionReasons);
 
     await client.query("BEGIN");
 
-    // წამოვიღოთ მომხმარებლის pending_changes
     const userRes = await client.query(
       "SELECT pending_changes FROM users WHERE id = $1",
       [userId],
@@ -205,7 +205,6 @@ export const updateUserStatus = async (req, res) => {
     const pendingChanges = userRes.rows[0].pending_changes;
 
     if (finalStatus === "approved" && pendingChanges) {
-      // თუ დამტკიცდა, pending_changes-დან ახალი მნიშვნელობები გადავიტანოთ ძირითად ველებში
       const updates = [];
       const values = [];
       let paramIdx = 1;
@@ -236,7 +235,6 @@ export const updateUserStatus = async (req, res) => {
         await client.query(dynamicQuery, values);
       }
 
-      // თუ ფოტოებიც შეიცვალა
       if (pendingChanges.photos && pendingChanges.photos.new) {
         const newPhotos = pendingChanges.photos.new;
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
@@ -253,7 +251,6 @@ export const updateUserStatus = async (req, res) => {
       }
     }
 
-    // სტატუსის, rejection_reasons-ის, reviewed_by-ისა და reviewed_at-ის განახლება
     const updateStatusQuery = `
       UPDATE users 
       SET status = $1, 
@@ -273,7 +270,6 @@ export const updateUserStatus = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // ნოთიფიკაცია
     if (finalStatus === "approved") {
       notifyUser(
         userId,
@@ -359,7 +355,6 @@ export const banUserByAdmin = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // 1. მომხმარებლის დაბლოკვა
     await client.query("UPDATE users SET is_banned = true WHERE id = $1", [
       userId,
     ]);
@@ -368,13 +363,11 @@ export const banUserByAdmin = async (req, res) => {
       [userId],
     );
 
-    // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
     const deviceRes = await client.query(
       "SELECT device_uuid, push_token, registration_ip FROM user_devices WHERE user_id = $1",
       [userId],
     );
 
-    // 3. დაბლოკილი იდენტიფიკატორების გადატანა blocked_identifiers ცხრილში
     if (deviceRes.rows.length > 0) {
       const { device_uuid, push_token, registration_ip } = deviceRes.rows[0];
 
