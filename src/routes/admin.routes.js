@@ -4,12 +4,11 @@ import {
   searchUsers,
   getPendingUsers,
   updateUserStatus,
-  getAdminReports,
-  resolveReport,
-  banUserByAdmin,
+  getAdminReports, // ახალი
+  resolveReport, // ახალი
+  banUserByAdmin, // ახალი
   getChatHistoryForAdmin,
   sendPushNotification,
-  getUserByIdForAdmin,
 } from "../controllers/admin.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import { isAdmin } from "../middleware/admin.middleware.js";
@@ -28,8 +27,7 @@ router.get("/reports", authMiddleware, isAdmin, getAdminReports);
 router.post("/reports/resolve", authMiddleware, isAdmin, resolveReport);
 router.post("/user/ban", authMiddleware, isAdmin, banUserByAdmin);
 
-router.get("/user/:id", authMiddleware, isAdmin, getUserByIdForAdmin);
-// ჩატი და ნოთიფიკაციები
+// არ დაგავიწყდეს getChatHistoryForAdmin-ის იმპორტირება ფაილის თავში!
 router.get(
   "/reports/chat-history",
   authMiddleware,
@@ -37,6 +35,7 @@ router.get(
   getChatHistoryForAdmin,
 );
 
+// Push Notification-ის გაგზავნის როუტი
 router.post(
   "/send-notification",
   authMiddleware,

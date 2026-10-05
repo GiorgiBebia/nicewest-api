@@ -29,6 +29,7 @@ export const getStats = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
+        // ძირითადი ველები (Frontend-ის თავსებადობისთვის)
         totalUsers: parseInt(stats.total_users || 0),
         totalMales: parseInt(stats.total_males || 0),
         totalFemales: parseInt(stats.total_females || 0),
@@ -40,6 +41,7 @@ export const getStats = async (req, res) => {
         rejectedUsers: parseInt(stats.rejected_users || 0),
         pendingUsers: parseInt(stats.pending_users || 0),
 
+        // ობიექტის სახითაც (ყოველი შემთხვევისთვის)
         total: {
           all: parseInt(stats.total_users || 0),
           males: parseInt(stats.total_males || 0),
@@ -90,12 +92,11 @@ export const searchUsers = async (req, res) => {
 
 export const getPendingUsers = async (req, res) => {
   try {
-    const { type, gender } = req.query;
+    const { type, gender } = req.query; // type: 'all' | 'requests', gender: 'all' | 'male' | 'female'
 
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
              u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
-             u.created_at,
              COALESCE(
                json_agg(
                  json_build_object(
@@ -111,16 +112,17 @@ export const getPendingUsers = async (req, res) => {
       WHERE u.status = 'pending'
     `;
 
+    // ტიპის ფილტრი (ყველა vs მოთხოვნები)
     if (type === "requests") {
       query += ` AND u.pending_changes IS NOT NULL AND u.pending_changes::text != '{}' AND u.pending_changes::text != 'null'`;
     }
 
+    // სქესის ფილტრი
     if (gender && gender !== "all") {
       query += ` AND u.gender = '${gender}'`;
     }
 
-    query += ` GROUP BY u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender, u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at
-               ORDER BY u.created_at DESC`;
+    query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
 
     const result = await pool.query(query);
 
@@ -171,7 +173,7 @@ export const updateUserStatus = async (req, res) => {
   const client = await pool.connect();
   try {
     const { userId, rejectionReasons } = req.body;
-    const adminId = req.user?.id || req.user?.userId;
+    const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
 
     if (!userId || !rejectionReasons) {
       return res.status(400).json({
@@ -180,21 +182,15 @@ export const updateUserStatus = async (req, res) => {
       });
     }
 
-    // შემოწმება: არის თუ არა რეალურად რაიმე ხარვეზი მონიშნული
-    const hasRejections = Object.entries(rejectionReasons).some(
-      ([key, value]) => {
-        if (key === "rejectedPhotos") {
-          return Array.isArray(value) && value.length > 0;
-        }
-        return value === true;
-      },
+    const hasRejections = Object.values(rejectionReasons).some(
+      (value) => value === true,
     );
-
     const finalStatus = hasRejections ? "rejected" : "approved";
     const reasonsJson = JSON.stringify(rejectionReasons);
 
     await client.query("BEGIN");
 
+    // წამოვიღოთ მომხმარებლის pending_changes
     const userRes = await client.query(
       "SELECT pending_changes FROM users WHERE id = $1",
       [userId],
@@ -209,6 +205,7 @@ export const updateUserStatus = async (req, res) => {
     const pendingChanges = userRes.rows[0].pending_changes;
 
     if (finalStatus === "approved" && pendingChanges) {
+      // თუ დამტკიცდა, pending_changes-დან ახალი მნიშვნელობები გადავიტანოთ ძირითად ველებში
       const updates = [];
       const values = [];
       let paramIdx = 1;
@@ -223,26 +220,12 @@ export const updateUserStatus = async (req, res) => {
         "search_radius",
         "min_age",
         "max_age",
-        "birth_date",
       ];
 
       allowedFields.forEach((field) => {
-        let newValue = undefined;
-        if (pendingChanges[field] !== undefined) {
-          if (
-            typeof pendingChanges[field] === "object" &&
-            pendingChanges[field] !== null &&
-            pendingChanges[field].new !== undefined
-          ) {
-            newValue = pendingChanges[field].new;
-          } else {
-            newValue = pendingChanges[field];
-          }
-        }
-
-        if (newValue !== undefined) {
+        if (pendingChanges[field] && pendingChanges[field].new !== undefined) {
           updates.push(`${field} = $${paramIdx}`);
-          values.push(newValue);
+          values.push(pendingChanges[field].new);
           paramIdx++;
         }
       });
@@ -253,15 +236,12 @@ export const updateUserStatus = async (req, res) => {
         await client.query(dynamicQuery, values);
       }
 
-      // ფოტოების განახლება
-      const photosToUpdate =
-        pendingChanges.photos?.new ||
-        (Array.isArray(pendingChanges.photos) ? pendingChanges.photos : null);
-
-      if (photosToUpdate) {
+      // თუ ფოტოებიც შეიცვალა
+      if (pendingChanges.photos && pendingChanges.photos.new) {
+        const newPhotos = pendingChanges.photos.new;
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-        for (let i = 0; i < photosToUpdate.length; i++) {
-          const photo = photosToUpdate[i];
+        for (let i = 0; i < newPhotos.length; i++) {
+          const photo = newPhotos[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
             await client.query(
@@ -273,6 +253,7 @@ export const updateUserStatus = async (req, res) => {
       }
     }
 
+    // სტატუსის, rejection_reasons-ის, reviewed_by-ისა და reviewed_at-ის განახლება
     const updateStatusQuery = `
       UPDATE users 
       SET status = $1, 
@@ -292,6 +273,7 @@ export const updateUserStatus = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // ნოთიფიკაცია
     if (finalStatus === "approved") {
       notifyUser(
         userId,
@@ -377,6 +359,7 @@ export const banUserByAdmin = async (req, res) => {
 
     await client.query("BEGIN");
 
+    // 1. მომხმარებლის დაბლოკვა
     await client.query("UPDATE users SET is_banned = true WHERE id = $1", [
       userId,
     ]);
@@ -385,11 +368,13 @@ export const banUserByAdmin = async (req, res) => {
       [userId],
     );
 
+    // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
     const deviceRes = await client.query(
       "SELECT device_uuid, push_token, registration_ip FROM user_devices WHERE user_id = $1",
       [userId],
     );
 
+    // 3. დაბლოკილი იდენტიფიკატორების გადატანა blocked_identifiers ცხრილში
     if (deviceRes.rows.length > 0) {
       const { device_uuid, push_token, registration_ip } = deviceRes.rows[0];
 
@@ -513,46 +498,5 @@ export const sendPushNotification = async (req, res) => {
   } catch (error) {
     console.error("Send Push Notification Error:", error);
     res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-export const getUserByIdForAdmin = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const query = `
-      SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
-             u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at,
-             COALESCE(
-               json_agg(
-                 json_build_object(
-                   'id', p.id,
-                   'image_url', p.image_url,
-                   'is_main', p.is_main,
-                   'position', p.position
-                 ) ORDER BY p.position ASC
-               ) FILTER (WHERE p.id IS NOT NULL), '[]'
-             ) AS photos
-      FROM users u
-      LEFT JOIN photos p ON u.id = p.user_id
-      WHERE u.id = $1
-      GROUP BY u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender, u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at
-    `;
-
-    const result = await pool.query(query, [id]);
-
-    if (result.rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: result.rows[0],
-    });
-  } catch (error) {
-    console.error("Get User By ID Error:", error);
-    return res.status(500).json({ success: false, message: error.message });
   }
 };
