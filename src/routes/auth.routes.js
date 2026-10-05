@@ -7,6 +7,7 @@ import {
   syncDevice,
   resetPassword,
   deleteAccount,
+  logAppOpen,
 } from "../controllers/auth.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 
@@ -17,6 +18,7 @@ router.post("/login", login);
 router.post("/social-login", socialLogin);
 router.post("/refresh", refresh);
 
+router.post("/log-open", authMiddleware, logAppOpen);
 router.post("/sync-device", authMiddleware, syncDevice);
 router.post("/reset-password", resetPassword);
 router.delete("/delete-account", authMiddleware, deleteAccount);

@@ -62,6 +62,22 @@ export const trackUserIp = async (userId, ipAddress) => {
   }
 };
 
+// Helper: App Open Logging
+export const logAppOpen = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    await pool.query("INSERT INTO app_sessions (user_id) VALUES ($1)", [
+      userId,
+    ]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("LOG APP OPEN ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა სესიის ლოგირებისას" });
+  }
+};
+
 export const register = async (req, res) => {
   try {
     const {
@@ -653,9 +669,7 @@ export const deleteAccount = async (req, res) => {
       userId,
     ]);
 
-    // 2. ამ DELETE-ის გაშვებისას ავტომატურად ამოქმედდება archive_user_full_data ტრიგერი,
-    // რომელიც მონაცემებს დააარქივებს deleted_users, deleted_photos, deleted_likes და deleted_messages ცხრილებში
-    // და ბოლოს წაშლის იუზერს users ცხრილიდან!
+    // 2. ამ DELETE-ის გაშვებისას ავტომატურად ამოქმედდება archive_user_full_data ტრიგერი
     await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
     await client.query("COMMIT");
