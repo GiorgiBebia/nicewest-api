@@ -95,6 +95,7 @@ export const getPendingUsers = async (req, res) => {
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
              u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
+             u.created_at,
              COALESCE(
                json_agg(
                  json_build_object(
@@ -118,7 +119,9 @@ export const getPendingUsers = async (req, res) => {
       query += ` AND u.gender = '${gender}'`;
     }
 
-    query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
+    // ველების სრული ჩამონათვალი GROUP BY-ში
+    query += ` GROUP BY u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender, u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at
+               ORDER BY u.created_at DESC`;
 
     const result = await pool.query(query);
 
@@ -491,5 +494,46 @@ export const sendPushNotification = async (req, res) => {
   } catch (error) {
     console.error("Send Push Notification Error:", error);
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const getUserByIdForAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = `
+      SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
+             u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'id', p.id,
+                   'image_url', p.image_url,
+                   'is_main', p.is_main,
+                   'position', p.position
+                 ) ORDER BY p.position ASC
+               ) FILTER (WHERE p.id IS NOT NULL), '[]'
+             ) AS photos
+      FROM users u
+      LEFT JOIN photos p ON u.id = p.user_id
+      WHERE u.id = $1
+      GROUP BY u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender, u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at
+    `;
+
+    const result = await pool.query(query, [id]);
+
+    if (result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Get User By ID Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

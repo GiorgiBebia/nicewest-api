@@ -9,6 +9,7 @@ import {
   banUserByAdmin,
   getChatHistoryForAdmin,
   sendPushNotification,
+  getUserByIdForAdmin,
 } from "../controllers/admin.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import { isAdmin } from "../middleware/admin.middleware.js";
@@ -27,6 +28,7 @@ router.get("/reports", authMiddleware, isAdmin, getAdminReports);
 router.post("/reports/resolve", authMiddleware, isAdmin, resolveReport);
 router.post("/user/ban", authMiddleware, isAdmin, banUserByAdmin);
 
+router.get("/user/:id", authMiddleware, isAdmin, getUserByIdForAdmin);
 // ჩატი და ნოთიფიკაციები
 router.get(
   "/reports/chat-history",
