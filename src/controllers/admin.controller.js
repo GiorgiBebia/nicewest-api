@@ -119,7 +119,6 @@ export const getPendingUsers = async (req, res) => {
       query += ` AND u.gender = '${gender}'`;
     }
 
-    // ველების სრული ჩამონათვალი GROUP BY-ში
     query += ` GROUP BY u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender, u.birth_date, u.status, u.pending_changes, u.rejection_reasons, u.created_at
                ORDER BY u.created_at DESC`;
 
@@ -181,10 +180,12 @@ export const updateUserStatus = async (req, res) => {
       });
     }
 
-    // შემოწმება: არის თუ არა რაიმე ხარვეზი მონიშნული (Boolean ველები ან rejectedPhotos მასივი)
+    // შემოწმება: არის თუ არა რეალურად რაიმე ხარვეზი მონიშნული
     const hasRejections = Object.entries(rejectionReasons).some(
       ([key, value]) => {
-        if (Array.isArray(value)) return value.length > 0;
+        if (key === "rejectedPhotos") {
+          return Array.isArray(value) && value.length > 0;
+        }
         return value === true;
       },
     );
@@ -222,12 +223,26 @@ export const updateUserStatus = async (req, res) => {
         "search_radius",
         "min_age",
         "max_age",
+        "birth_date",
       ];
 
       allowedFields.forEach((field) => {
-        if (pendingChanges[field] && pendingChanges[field].new !== undefined) {
+        let newValue = undefined;
+        if (pendingChanges[field] !== undefined) {
+          if (
+            typeof pendingChanges[field] === "object" &&
+            pendingChanges[field] !== null &&
+            pendingChanges[field].new !== undefined
+          ) {
+            newValue = pendingChanges[field].new;
+          } else {
+            newValue = pendingChanges[field];
+          }
+        }
+
+        if (newValue !== undefined) {
           updates.push(`${field} = $${paramIdx}`);
-          values.push(pendingChanges[field].new);
+          values.push(newValue);
           paramIdx++;
         }
       });
@@ -238,11 +253,15 @@ export const updateUserStatus = async (req, res) => {
         await client.query(dynamicQuery, values);
       }
 
-      if (pendingChanges.photos && pendingChanges.photos.new) {
-        const newPhotos = pendingChanges.photos.new;
+      // ფოტოების განახლება
+      const photosToUpdate =
+        pendingChanges.photos?.new ||
+        (Array.isArray(pendingChanges.photos) ? pendingChanges.photos : null);
+
+      if (photosToUpdate) {
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-        for (let i = 0; i < newPhotos.length; i++) {
-          const photo = newPhotos[i];
+        for (let i = 0; i < photosToUpdate.length; i++) {
+          const photo = photosToUpdate[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
             await client.query(
