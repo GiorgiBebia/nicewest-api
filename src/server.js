@@ -7,6 +7,7 @@ import profileRoutes from "./routes/profile.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import likeRoutes from "./routes/like.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import { initLikeResetCron } from "./services/likeReset.cron.js";
 
 dotenv.config();
 
@@ -33,6 +34,9 @@ app.use("/auth", authRoutes);
 app.use("/likes", likeRoutes);
 console.log("Admin routes register checking...");
 app.use("/admin", adminRoutes);
+
+// ფონური დავალება ლაიქების ავტომატური აღდგენისა და ნოთიფიკაციების გაგზავნისთვის
+initLikeResetCron();
 
 io.on("connection", (socket) => {
   socket.on("join", (userId) => {

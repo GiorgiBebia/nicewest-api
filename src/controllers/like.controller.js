@@ -46,10 +46,18 @@ export const likeUser = async (req, res) => {
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
 
     if (hoursPassed >= 12) {
-      await pool.query(
-        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2",
+      const resetRes = await pool.query(
+        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 AND likes_left < 30 RETURNING likes_left",
         [now, from],
       );
+      if (resetRes.rows.length > 0) {
+        notifyUser(
+          from,
+          "მოწონებები განახლდა! 🎉",
+          "შენი 30 დღიური მოწონება კვლავ აქტიურია. დაბრუნდი აპლიკაციაში!",
+          { type: "likes_reset" },
+        );
+      }
       likes_left = 30;
       last_like_reset = now;
     }
@@ -177,11 +185,20 @@ export const getLikesStatus = async (req, res) => {
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
 
     if (hoursPassed >= 12) {
-      likes_left = 30;
-      await pool.query(
-        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2",
+      const resetRes = await pool.query(
+        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 AND likes_left < 30 RETURNING likes_left",
         [now, userId],
       );
+      if (resetRes.rows.length > 0) {
+        notifyUser(
+          userId,
+          "მოწონებები განახლდა! 🎉",
+          "შენი 30 დღიური მოწონება კვლავ აქტიურია. დაბრუნდი აპლიკაციაში!",
+          { type: "likes_reset" },
+        );
+      }
+      likes_left = 30;
+      last_like_reset = now;
     }
 
     res.json({ likes_left, last_like_reset });
