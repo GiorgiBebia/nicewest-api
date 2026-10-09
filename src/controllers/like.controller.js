@@ -41,16 +41,20 @@ export const likeUser = async (req, res) => {
       last_like_reset,
       full_name: senderName,
     } = userRes.rows[0];
-    const now = new Date();
-    const lastReset = new Date(last_like_reset || 0);
-    const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
 
-    if (hoursPassed >= 12) {
+    const now = new Date();
+    let lastReset = last_like_reset ? new Date(last_like_reset) : null;
+
+    // თუ last_like_reset არ არსებობს ან 12 საათზე მეტია გასული, გავანახლოთ 30-ზე
+    const hoursPassed = lastReset ? (now - lastReset) / (1000 * 60 * 60) : 999;
+
+    if (!lastReset || hoursPassed >= 12) {
       const resetRes = await pool.query(
-        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 AND likes_left < 30 RETURNING likes_left",
+        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 RETURNING likes_left",
         [now, from],
       );
-      if (resetRes.rows.length > 0) {
+
+      if (resetRes.rows.length > 0 && likes_left < 30) {
         notifyUser(
           from,
           "მოწონებები განახლდა! 🎉",
@@ -58,24 +62,28 @@ export const likeUser = async (req, res) => {
           { type: "likes_reset" },
         );
       }
+
       likes_left = 30;
-      last_like_reset = now;
+      lastReset = now;
     }
 
     // 3. ATOMIC UPDATE: ლაიქის ჩამოჭრა
+    // თუ ეს იყო პირველი ლაიქი 30-დან, ჩავწეროთ last_like_reset = NOW()
     const decrementRes = await pool.query(
-      "UPDATE users SET likes_left = likes_left - 1 WHERE id = $1 AND likes_left > 0 RETURNING likes_left, last_like_reset",
-      [from],
+      `UPDATE users 
+       SET likes_left = likes_left - 1,
+           last_like_reset = CASE WHEN likes_left = 30 THEN $1 ELSE last_like_reset END
+       WHERE id = $2 AND likes_left > 0 
+       RETURNING likes_left, last_like_reset`,
+      [now, from],
     );
 
     if (decrementRes.rows.length === 0) {
-      const nextReset = new Date(
-        new Date(last_like_reset).getTime() + 12 * 60 * 60 * 1000,
-      );
-      const minutesLeft = Math.max(
-        1,
-        Math.ceil((nextReset - now) / (1000 * 60)),
-      );
+      // ლიმიტი ამოიწურა! გამოვთვალოთ ზუსტი დარჩენილი წუთები 12-საათიან ციკლამდე
+      const effectiveLastReset = lastReset || now;
+      const nextResetTime = effectiveLastReset.getTime() + 12 * 60 * 60 * 1000;
+      const msLeft = nextResetTime - now.getTime();
+      const minutesLeft = Math.max(1, Math.ceil(msLeft / (1000 * 60)));
 
       return res.status(429).json({
         error: "დღიური ლაიქების ლიმიტი ამოიწურა!",
@@ -181,15 +189,16 @@ export const getLikesStatus = async (req, res) => {
 
     let { likes_left, last_like_reset } = userRes.rows[0];
     const now = new Date();
-    const lastReset = new Date(last_like_reset || 0);
-    const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
+    const lastReset = last_like_reset ? new Date(last_like_reset) : null;
+    const hoursPassed = lastReset ? (now - lastReset) / (1000 * 60 * 60) : 999;
 
-    if (hoursPassed >= 12) {
+    if (!lastReset || hoursPassed >= 12) {
       const resetRes = await pool.query(
-        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 AND likes_left < 30 RETURNING likes_left",
+        "UPDATE users SET likes_left = 30, last_like_reset = $1 WHERE id = $2 RETURNING likes_left",
         [now, userId],
       );
-      if (resetRes.rows.length > 0) {
+
+      if (resetRes.rows.length > 0 && likes_left < 30) {
         notifyUser(
           userId,
           "მოწონებები განახლდა! 🎉",
@@ -197,6 +206,7 @@ export const getLikesStatus = async (req, res) => {
           { type: "likes_reset" },
         );
       }
+
       likes_left = 30;
       last_like_reset = now;
     }
