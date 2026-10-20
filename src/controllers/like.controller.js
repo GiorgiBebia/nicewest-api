@@ -211,7 +211,16 @@ export const getLikesStatus = async (req, res) => {
       last_like_reset = now;
     }
 
-    res.json({ likes_left, last_like_reset });
+    // გამოვთვალოთ დარჩენილი წუთები იმ შემთხვევაში, თუ ლაიქები 0-ია
+    let nextResetInMinutes = 0;
+    if (likes_left <= 0 && last_like_reset) {
+      const effectiveLastReset = new Date(last_like_reset);
+      const nextResetTime = effectiveLastReset.getTime() + 12 * 60 * 60 * 1000;
+      const msLeft = nextResetTime - now.getTime();
+      nextResetInMinutes = Math.max(1, Math.ceil(msLeft / (1000 * 60)));
+    }
+
+    res.json({ likes_left, last_like_reset, nextResetInMinutes });
   } catch (err) {
     console.error("GET LIKES STATUS ERROR:", err);
     res.status(500).json({ error: "სტატუსის წამოღება დაფეილდა" });
