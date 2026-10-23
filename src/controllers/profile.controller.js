@@ -215,7 +215,7 @@ export const getMe = async (req, res) => {
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 30;
+    const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
 
     const meResult = await pool.query(
