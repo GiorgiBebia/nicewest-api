@@ -211,10 +211,13 @@ export const getMe = async (req, res) => {
   }
 };
 
-// გამორიცხავს ორმხრივად დაბლოკილ და დისლაიქებულ იუზერებს სვაიპებიდან
+// გამორიცხავს ორმხრივად დაბლოკილ და დისლაიქებულ იუზერებს სვაიპებიდან + მხარდაჭერილია პაგინაცია (limit / offset)
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 30;
+    const offset = parseInt(req.query.offset) || 0;
+
     const meResult = await pool.query(
       "SELECT latitude, longitude, search_radius, min_age, max_age, looking_for FROM users WHERE id = $1",
       [userId],
@@ -252,7 +255,7 @@ export const getDiscovery = async (req, res) => {
       WHERE f.distance <= $4
       GROUP BY f.id, f.full_name, f.age, f.city, f.bio, f.interests, f.distance
       ORDER BY f.distance ASC 
-      LIMIT 20`,
+      LIMIT $8 OFFSET $9`,
       [
         userId,
         me.latitude,
@@ -261,6 +264,8 @@ export const getDiscovery = async (req, res) => {
         me.min_age,
         me.max_age,
         me.looking_for,
+        limit,
+        offset,
       ],
     );
     res.json(discoveryResult.rows);
