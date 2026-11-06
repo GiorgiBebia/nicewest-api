@@ -96,7 +96,7 @@ export const likeUser = async (req, res) => {
 
     // 4. ლაიქის ჩაწერა likes ცხრილში
     await pool.query(
-      "INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2)",
+      "INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
       [from, to],
     );
 
