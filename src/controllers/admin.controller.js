@@ -1,5 +1,10 @@
 import { pool } from "../db/index.js";
-import { notifyUser } from "../services/notification.service.js";
+import { notifyUser, sendExpoNotifications } from "../services/notification.service.js";
+
+const toId = (value) => {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+};
 
 export const getStats = async (req, res) => {
   try {
@@ -62,9 +67,9 @@ export const getStats = async (req, res) => {
 
 export const searchUsers = async (req, res) => {
   try {
-    const { query } = req.query;
+    const query = typeof req.query.query === "string" ? req.query.query.trim() : "";
 
-    if (!query || query.length < 2) {
+    if (!query || query.length < 2 || query.length > 60) {
       return res.status(200).json({ success: true, data: [] });
     }
 
@@ -74,11 +79,11 @@ export const searchUsers = async (req, res) => {
         p.image_url as profile_image
       FROM users u
       LEFT JOIN photos p ON u.id = p.user_id AND p.position = 0
-      WHERE u.full_name ILIKE $1 OR u.username ILIKE $1 
+      WHERE u.full_name ILIKE $1 ESCAPE '\\' OR u.username ILIKE $1 ESCAPE '\\'
       LIMIT 20
     `;
 
-    const result = await pool.query(searchQuery, [`%${query}%`]);
+    const result = await pool.query(searchQuery, [`%${query.replace(/[\\%_]/g, "\\$&")}%`]);
 
     return res.status(200).json({
       success: true,
@@ -94,6 +99,7 @@ export const getPendingUsers = async (req, res) => {
   try {
     const { type, gender } = req.query; // type: 'all' | 'requests', gender: 'all' | 'male' | 'female'
 
+    const params = [];
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
              u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
@@ -118,13 +124,14 @@ export const getPendingUsers = async (req, res) => {
     }
 
     // სქესის ფილტრი
-    if (gender && gender !== "all") {
-      query += ` AND u.gender = '${gender}'`;
+    if (gender === "male" || gender === "female") {
+      params.push(gender);
+      query += ` AND u.gender = $${params.length}`;
     }
 
-    query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
+    query += ` GROUP BY u.id ORDER BY u.created_at DESC LIMIT 200`;
 
-    const result = await pool.query(query);
+    const result = await pool.query(query, params);
 
     return res.status(200).json({
       success: true,
@@ -172,34 +179,28 @@ export const getPendingReports = async (req, res) => {
 export const updateUserStatus = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { userId, rejectionReasons } = req.body;
-    const adminId = req.user?.id || req.user?.userId; // ავტორიზებული ადმინისტრატორის ID middleware-დან
+    const userId = toId(req.body?.userId);
+    const rejectionReasons = req.body?.rejectionReasons;
+    const adminId = req.user.id;
 
-    if (!userId || !rejectionReasons) {
+    if (!userId || !rejectionReasons || typeof rejectionReasons !== "object" || Array.isArray(rejectionReasons)) {
       return res.status(400).json({
         success: false,
         message: "userId and rejectionReasons are required",
       });
     }
 
-    const hasRejections = Object.values(rejectionReasons).some(
-      (value) => value === true,
-    );
+    const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
     const finalStatus = hasRejections ? "rejected" : "approved";
     const reasonsJson = JSON.stringify(rejectionReasons);
 
     await client.query("BEGIN");
 
     // წამოვიღოთ მომხმარებლის pending_changes
-    const userRes = await client.query(
-      "SELECT pending_changes FROM users WHERE id = $1",
-      [userId],
-    );
+    const userRes = await client.query("SELECT pending_changes FROM users WHERE id = $1 FOR UPDATE", [userId]);
     if (userRes.rowCount === 0) {
       await client.query("ROLLBACK");
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     const pendingChanges = userRes.rows[0].pending_changes;
@@ -213,6 +214,7 @@ export const updateUserStatus = async (req, res) => {
       const allowedFields = [
         "full_name",
         "age",
+        "birth_date",
         "bio",
         "city",
         "gender",
@@ -244,10 +246,12 @@ export const updateUserStatus = async (req, res) => {
           const photo = newPhotos[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
-            await client.query(
-              "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
-              [userId, photo.image_url, photoPos, photoPos === 0],
-            );
+            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
+              userId,
+              photo.image_url,
+              photoPos,
+              photoPos === 0,
+            ]);
           }
         }
       }
@@ -264,12 +268,7 @@ export const updateUserStatus = async (req, res) => {
       WHERE id = $4 
       RETURNING id, status, rejection_reasons, reviewed_by, reviewed_at
     `;
-    const result = await client.query(updateStatusQuery, [
-      finalStatus,
-      reasonsJson,
-      adminId,
-      userId,
-    ]);
+    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, adminId, userId]);
 
     await client.query("COMMIT");
 
@@ -296,7 +295,7 @@ export const updateUserStatus = async (req, res) => {
       data: result.rows[0],
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Update Status Error:", error);
     res.status(500).json({ success: false, message: error.message });
   } finally {
@@ -329,19 +328,13 @@ export const getAdminReports = async (req, res) => {
 
 export const resolveReport = async (req, res) => {
   try {
-    const { reportId } = req.body;
+    const reportId = toId(req.body?.reportId);
     if (!reportId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "reportId is required" });
+      return res.status(400).json({ success: false, message: "reportId is required" });
     }
 
-    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [
-      reportId,
-    ]);
-    res
-      .status(200)
-      .json({ success: true, message: "Report resolved successfully" });
+    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [reportId]);
+    res.status(200).json({ success: true, message: "Report resolved successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -350,23 +343,32 @@ export const resolveReport = async (req, res) => {
 export const banUserByAdmin = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { userId, reason } = req.body;
+    const userId = toId(req.body?.userId);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0, 300) : "";
     if (!userId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "userId is required" });
+      return res.status(400).json({ success: false, message: "userId is required" });
+    }
+    if (userId === req.user.id) {
+      return res.status(400).json({ success: false, message: "საკუთარ თავს ვერ დაბლოკავ" });
     }
 
     await client.query("BEGIN");
 
-    // 1. მომხმარებლის დაბლოკვა
-    await client.query("UPDATE users SET is_banned = true WHERE id = $1", [
-      userId,
-    ]);
-    await client.query(
-      "UPDATE reports SET status = 'resolved' WHERE reported_id = $1",
+    // 1. მომხმარებლის დაბლოკვა (ადმინისტრატორს ვერ დაბლოკავს)
+    const banRes = await client.query(
+      "UPDATE users SET is_banned = true WHERE id = $1 AND COALESCE(is_admin,false) = false RETURNING id",
       [userId],
     );
+    if (banRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "მომხმარებელი ვერ მოიძებნა ან ადმინისტრატორია",
+      });
+    }
+    // ძველი სესიები უქმდება
+    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [userId]);
+    await client.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
 
     // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
     const deviceRes = await client.query(
@@ -375,10 +377,10 @@ export const banUserByAdmin = async (req, res) => {
     );
 
     // 3. დაბლოკილი იდენტიფიკატორების გადატანა blocked_identifiers ცხრილში
-    if (deviceRes.rows.length > 0) {
-      const { device_uuid, push_token, registration_ip } = deviceRes.rows[0];
+    for (const dev of deviceRes.rows) {
+      const { device_uuid, push_token, registration_ip } = dev;
 
-      if (device_uuid || push_token || registration_ip) {
+      if (device_uuid) {
         await client.query(
           `INSERT INTO blocked_identifiers (device_uuid, push_token, ip_address, reason)
            VALUES ($1, $2, $3, $4)
@@ -386,15 +388,11 @@ export const banUserByAdmin = async (req, res) => {
            SET push_token = EXCLUDED.push_token,
                ip_address = EXCLUDED.ip_address,
                reason = EXCLUDED.reason`,
-          [
-            device_uuid || null,
-            push_token || null,
-            registration_ip || null,
-            reason || `Banned user ID: ${userId}`,
-          ],
+          [device_uuid || null, push_token || null, registration_ip || null, reason || `Banned user ID: ${userId}`],
         );
       }
     }
+    await client.query("UPDATE user_devices SET push_token = NULL WHERE user_id = $1", [userId]);
 
     await client.query("COMMIT");
 
@@ -403,7 +401,7 @@ export const banUserByAdmin = async (req, res) => {
       message: "User banned and device identifiers blacklisted successfully",
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Ban User Error:", error);
     res.status(500).json({ success: false, message: error.message });
   } finally {
@@ -413,7 +411,8 @@ export const banUserByAdmin = async (req, res) => {
 
 export const getChatHistoryForAdmin = async (req, res) => {
   try {
-    const { user1, user2 } = req.query;
+    const user1 = toId(req.query.user1);
+    const user2 = toId(req.query.user2);
 
     if (!user1 || !user2) {
       return res.status(400).json({
@@ -428,6 +427,7 @@ export const getChatHistoryForAdmin = async (req, res) => {
       WHERE (sender_id = $1 AND receiver_id = $2) 
          OR (sender_id = $2 AND receiver_id = $1)
       ORDER BY created_at ASC
+      LIMIT 1000
     `;
 
     const result = await pool.query(query, [user1, user2]);
@@ -447,18 +447,27 @@ export const sendPushNotification = async (req, res) => {
     const { title, body, userIds, sendToAll } = req.body;
 
     if (!title || !body) {
-      return res
-        .status(400)
-        .json({ success: false, message: "title and body are required" });
+      return res.status(400).json({ success: false, message: "title and body are required" });
     }
 
-    let query =
-      "SELECT push_token FROM user_devices WHERE push_token IS NOT NULL AND push_token != ''";
-    let queryParams = [];
+    const hasTargets = Array.isArray(userIds) && userIds.length > 0;
+    if (!sendToAll && !hasTargets) {
+      return res.status(400).json({
+        success: false,
+        message: "მიუთითე userIds ან sendToAll=true",
+      });
+    }
 
-    if (!sendToAll && Array.isArray(userIds) && userIds.length > 0) {
-      query += " AND user_id = ANY($1)";
-      queryParams.push(userIds);
+    let query = `SELECT ud.push_token FROM user_devices ud
+      JOIN users u ON u.id = ud.user_id
+      WHERE ud.push_token IS NOT NULL AND ud.push_token != ''
+        AND COALESCE(u.is_banned,false) = false`;
+    const queryParams = [];
+
+    if (!sendToAll) {
+      const ids = userIds.map(toId).filter(Boolean);
+      query += " AND ud.user_id = ANY($1::bigint[])";
+      queryParams.push(ids);
     }
 
     const result = await pool.query(query, queryParams);
@@ -471,29 +480,14 @@ export const sendPushNotification = async (req, res) => {
       });
     }
 
-    const messages = tokens.map((token) => ({
-      to: token,
-      sound: "default",
-      title: title,
-      body: body,
-    }));
-
-    const expoResponse = await fetch("https://exp.host/--/api/v2/push/send", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Accept-encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(messages),
-    });
-
-    const responseData = await expoResponse.json();
+    // Expo აქცეპტებს მაქსიმუმ 100 შეტყობინებას ერთ მოთხოვნაში
+    for (let i = 0; i < tokens.length; i += 100) {
+      await sendExpoNotifications(tokens.slice(i, i + 100), String(title).slice(0, 100), String(body).slice(0, 300));
+    }
 
     res.status(200).json({
       success: true,
       message: `Notification request sent to ${tokens.length} device(s)`,
-      expoResult: responseData,
     });
   } catch (error) {
     console.error("Send Push Notification Error:", error);

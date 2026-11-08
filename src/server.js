@@ -2,58 +2,106 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import helmet from "helmet";
+import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+dotenv.config();
+
+import { pool } from "./db/index.js";
+import { setIo } from "./socket.js";
 import profileRoutes from "./routes/profile.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import likeRoutes from "./routes/like.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import { initLikeResetCron } from "./services/likeReset.cron.js";
+import { globalLimiter } from "./middleware/rateLimit.middleware.js";
 
-dotenv.config();
+if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
+  console.error("JWT_SECRET და JWT_REFRESH_SECRET აუცილებელია!");
+  process.exit(1);
+}
 
 const app = express();
 const server = http.createServer(app);
 
-app.get("/ping", (req, res) => {
-  res.status(200).send("pong");
-});
+// Render/Cloudflare Tunnel-ის უკან ვართ: ერთი პროქსი
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
-  transports: ["polling", "websocket"],
-});
+app.get("/ping", (req, res) => res.status(200).send("pong"));
 
-app.use(cors());
-app.use(express.json());
+app.use(helmet());
+// მობილური აპი CORS-ს არ საჭიროებს; თუ ვებ-ადმინი გაჩნდება, ALLOWED_ORIGINS-ში ჩაწერე
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin: allowedOrigins.length ? allowedOrigins : false,
+  }),
+);
+app.use(express.json({ limit: "100kb" }));
+app.use(globalLimiter);
 
 app.use("/profile", profileRoutes);
 app.use("/auth", authRoutes);
 app.use("/likes", likeRoutes);
-console.log("Admin routes register checking...");
 app.use("/admin", adminRoutes);
 
-// ფონური დავალება ლაიქების ავტომატური აღდგენისა და ნოთიფიკაციების გაგზავნისთვის
-initLikeResetCron();
+app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
-io.on("connection", (socket) => {
-  socket.on("join", (userId) => {
-    if (userId) {
-      socket.join(userId.toString());
-      console.log(`User ${userId} joined their private room`);
-    }
-  });
-
-  socket.on("disconnect", () => {
-    console.log("A user disconnected");
-  });
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Invalid JSON" });
+  }
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Payload too large" });
+  }
+  console.error("UNHANDLED ERROR:", err);
+  res.status(500).json({ error: "Server error" });
 });
 
-export { io };
+// ---------------- Socket.io ----------------
+const io = new Server(server, {
+  cors: { origin: allowedOrigins.length ? allowedOrigins : false },
+  transports: ["polling", "websocket"],
+  maxHttpBufferSize: 1e5,
+});
 
-const PORT = process.env.PORT || 5000 || 3000;
+// ავტორიზაცია: კლიენტმა უნდა გამოგზავნოს access token (socket.handshake.auth.token)
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("UNAUTHORIZED"));
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const r = await pool.query("SELECT id FROM users WHERE id = $1 AND COALESCE(is_banned,false) = false", [
+      decoded.id,
+    ]);
+    if (r.rows.length === 0) return next(new Error("UNAUTHORIZED"));
+
+    socket.userId = Number(r.rows[0].id);
+    next();
+  } catch (e) {
+    next(new Error("UNAUTHORIZED"));
+  }
+});
+
+io.on("connection", (socket) => {
+  // მომხმარებელი მხოლოდ საკუთარ ოთახში შედის (კლიენტის "join" აღარ გვჭირდება)
+  socket.join(String(socket.userId));
+  socket.on("disconnect", () => {});
+});
+
+setIo(io);
+
+initLikeResetCron();
+
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
+export { io };

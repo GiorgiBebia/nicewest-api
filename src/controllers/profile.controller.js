@@ -1,167 +1,264 @@
 import { pool } from "../db/index.js";
-import { io } from "../server.js";
+import { emitToUser } from "../socket.js";
 import { notifyAdmins, notifyUser } from "../services/notification.service.js";
+
+const MAX_PHOTOS = 6;
+const MAX_MESSAGE_LENGTH = 2000;
+const REPORT_REASON_MAX = 100;
+const REPORT_DETAILS_MAX = 1000;
+
+const toId = (value) => {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+};
+
+const isHttpUrl = (value) => {
+  if (typeof value !== "string" || value.length > 1000) return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
+const cleanText = (value, max) => {
+  if (value === undefined || value === null) return undefined;
+  return String(value).trim().slice(0, max);
+};
+
+const ageFromBirthDate = (birthDate) => {
+  const d = new Date(birthDate);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+};
+
+// შემოსული ველების გასუფთავება და ვალიდაცია. აბრუნებს { fields, photos } ან { error }
+const sanitizeProfileInput = (body) => {
+  const fields = {};
+
+  const full_name = cleanText(body.full_name, 60);
+  if (full_name !== undefined) {
+    if (full_name.length < 2) return { error: "სახელი ძალიან მოკლეა" };
+    fields.full_name = full_name;
+  }
+
+  if (body.birth_date !== undefined && body.birth_date !== null) {
+    const age = ageFromBirthDate(body.birth_date);
+    if (age === null) return { error: "დაბადების თარიღი არასწორია" };
+    if (age < 18) return { error: "აპლიკაცია მხოლოდ 18+ მომხმარებლებისთვისაა" };
+    if (age > 100) return { error: "დაბადების თარიღი არასწორია" };
+    fields.birth_date = String(body.birth_date).slice(0, 10);
+    fields.age = age; // ასაკი სერვერზე გამოითვლება
+  } else if (body.age !== undefined && body.age !== null) {
+    const age = Number(body.age);
+    if (!Number.isInteger(age) || age < 18 || age > 100) {
+      return { error: "ასაკი უნდა იყოს 18-დან 100-მდე" };
+    }
+    fields.age = age;
+  }
+
+  const bio = cleanText(body.bio, 500);
+  if (bio !== undefined) fields.bio = bio;
+
+  const city = cleanText(body.city, 80);
+  if (city !== undefined) fields.city = city;
+
+  if (body.gender !== undefined) {
+    const g = String(body.gender).toLowerCase();
+    if (!["male", "female"].includes(g)) return { error: "სქესი არასწორია" };
+    fields.gender = g;
+  }
+
+  if (body.looking_for !== undefined) {
+    const g = String(body.looking_for).toLowerCase();
+    if (!["male", "female", "both"].includes(g)) {
+      return { error: "არჩეული სქესი არასწორია" };
+    }
+    fields.looking_for = g;
+  }
+
+  if (body.search_radius !== undefined && body.search_radius !== null) {
+    const r = Number(body.search_radius);
+    if (!Number.isInteger(r) || r < 1 || r > 20000) {
+      return { error: "რადიუსი არასწორია" };
+    }
+    fields.search_radius = r;
+  }
+
+  let minAge = body.min_age;
+  let maxAge = body.max_age;
+  if (minAge !== undefined && minAge !== null) {
+    minAge = Number(minAge);
+    if (!Number.isInteger(minAge) || minAge < 18 || minAge > 100) {
+      return { error: "მინიმალური ასაკი არასწორია" };
+    }
+    fields.min_age = minAge;
+  }
+  if (maxAge !== undefined && maxAge !== null) {
+    maxAge = Number(maxAge);
+    if (!Number.isInteger(maxAge) || maxAge < 18 || maxAge > 100) {
+      return { error: "მაქსიმალური ასაკი არასწორია" };
+    }
+    fields.max_age = maxAge;
+  }
+  if (fields.min_age !== undefined && fields.max_age !== undefined && fields.min_age > fields.max_age) {
+    return { error: "მინიმალური ასაკი მაქსიმალურზე დიდია" };
+  }
+
+  let photos;
+  if (body.photos !== undefined) {
+    if (!Array.isArray(body.photos)) return { error: "ფოტოების ფორმატი არასწორია" };
+    if (body.photos.length > MAX_PHOTOS) {
+      return { error: `მაქსიმუმ ${MAX_PHOTOS} ფოტოა დაშვებული` };
+    }
+    photos = [];
+    for (let i = 0; i < body.photos.length; i++) {
+      const p = body.photos[i];
+      if (!p || !isHttpUrl(p.image_url)) {
+        return { error: "ფოტოს მისამართი არასწორია" };
+      }
+      photos.push({ image_url: p.image_url, position: i, is_main: i === 0 });
+    }
+  }
+
+  return { fields, photos };
+};
 
 // ლოკაციის განახლება
 export const updateLocation = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { latitude, longitude } = req.body;
-    await pool.query(
-      "UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3",
-      [latitude, longitude, userId],
-    );
+    const latitude = Number(req.body?.latitude);
+    const longitude = Number(req.body?.longitude);
+
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      return res.status(400).json({ error: "კოორდინატები არასწორია" });
+    }
+
+    await pool.query("UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3", [latitude, longitude, userId]);
     res.json({ success: true });
   } catch (err) {
+    console.error("UPDATE LOCATION ERROR:", err);
     res.status(500).json({ error: "Location update failed" });
   }
 };
 
 export const updateProfile = async (req, res) => {
+  const parsed = sanitizeProfileInput(req.body || {});
+  if (parsed.error) {
+    return res.status(400).json({ success: false, message: parsed.error });
+  }
+  const { fields, photos } = parsed;
+
   const client = await pool.connect();
   try {
     const userId = req.user.id;
     const isAdmin = req.user.is_admin;
-    const authUsername = req.user.username; // JWT token-იდან წამოღებული username
-
-    // username-ს იგნორირებას ვუკეთებთ req.body-დან
-    const {
-      full_name,
-      age,
-      birth_date,
-      bio,
-      city,
-      gender,
-      looking_for,
-      search_radius,
-      min_age,
-      max_age,
-      photos,
-    } = req.body;
+    const authUsername = req.user.username;
 
     await client.query("BEGIN");
 
     if (isAdmin) {
-      const query = `
-        UPDATE users 
-        SET 
-          full_name = $1, age = $2, birth_date = $3, bio = $4, city = $5, gender = $6, 
-          looking_for = $7, search_radius = $8, min_age = $9, max_age = $10,
-          status = COALESCE(status, 'approved'),
-          pending_changes = NULL,
-          rejection_reasons = '{}'::jsonb
-        WHERE id = $11
-        RETURNING *
-      `;
+      const keys = Object.keys(fields);
+      if (keys.length > 0) {
+        const sets = keys.map((k, i) => `${k} = $${i + 1}`);
+        await client.query(
+          `UPDATE users SET ${sets.join(", ")},
+             status = COALESCE(status, 'approved'),
+             pending_changes = NULL,
+             rejection_reasons = '{}'::jsonb
+           WHERE id = $${keys.length + 1}`,
+          [...keys.map((k) => fields[k]), userId],
+        );
+      }
 
-      const userResult = await client.query(query, [
-        full_name,
-        age,
-        birth_date,
-        bio,
-        city,
-        gender,
-        looking_for,
-        search_radius,
-        min_age,
-        max_age,
-        userId,
-      ]);
-
-      if (photos && Array.isArray(photos)) {
+      if (photos) {
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-        for (let i = 0; i < photos.length; i++) {
-          const photo = photos[i];
-          if (photo && photo.image_url) {
-            const photoPos = photo.position !== undefined ? photo.position : i;
-            await client.query(
-              "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
-              [userId, photo.image_url, photoPos, photoPos === 0],
-            );
-          }
+        for (const p of photos) {
+          await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
+            userId,
+            p.image_url,
+            p.position,
+            p.is_main,
+          ]);
         }
       }
 
+      const me = await client.query("SELECT * FROM users WHERE id = $1", [userId]);
       await client.query("COMMIT");
-      return res.status(200).json({ success: true, data: userResult.rows[0] });
-    } else {
-      const currentUserRes = await client.query(
-        "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1",
-        [userId],
-      );
-      const currentUser = currentUserRes.rows[0] || {};
-
-      const currentPhotosRes = await client.query(
-        "SELECT image_url, position, is_main FROM photos WHERE user_id = $1 ORDER BY position ASC",
-        [userId],
-      );
-      const currentPhotos = currentPhotosRes.rows;
-
-      const changes = {};
-      const newFields = {
-        full_name,
-        age,
-        birth_date,
-        bio,
-        city,
-        gender,
-        looking_for,
-        search_radius,
-        min_age,
-        max_age,
-      };
-
-      Object.keys(newFields).forEach((key) => {
-        if (
-          newFields[key] !== undefined &&
-          newFields[key] !== currentUser[key]
-        ) {
-          changes[key] = {
-            old: currentUser[key],
-            new: newFields[key],
-          };
-        }
-      });
-
-      if (photos && Array.isArray(photos)) {
-        const isPhotosChanged =
-          JSON.stringify(photos) !== JSON.stringify(currentPhotos);
-        if (isPhotosChanged) {
-          changes["photos"] = {
-            old: currentPhotos,
-            new: photos,
-          };
-        }
-      }
-
-      const pendingJson =
-        Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
-
-      const updateQuery = `
-        UPDATE users 
-        SET 
-          status = 'pending',
-          pending_changes = $1,
-          rejection_reasons = '{}'::jsonb
-        WHERE id = $2
-        RETURNING *
-      `;
-
-      const userResult = await client.query(updateQuery, [pendingJson, userId]);
-      await client.query("COMMIT");
-
-      notifyAdmins(
-        "ახალი განაცხადი 📝",
-        `მომხმარებელმა (${full_name || authUsername}) განაახლა პროფილი და ელოდება დადასტურებას.`,
-        { type: "PENDING_USER", userId },
-      );
-
-      return res.status(200).json({ success: true, data: userResult.rows[0] });
+      const { password_hash, ...safe } = me.rows[0];
+      return res.status(200).json({ success: true, data: safe });
     }
+
+    const currentUserRes = await client.query(
+      "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1 FOR UPDATE",
+      [userId],
+    );
+    const currentUser = currentUserRes.rows[0] || {};
+
+    const currentPhotosRes = await client.query(
+      "SELECT image_url, position, is_main FROM photos WHERE user_id = $1 ORDER BY position ASC",
+      [userId],
+    );
+    const currentPhotos = currentPhotosRes.rows.map((p, i) => ({
+      image_url: p.image_url,
+      position: i,
+      is_main: i === 0,
+    }));
+
+    const changes = {};
+    for (const key of Object.keys(fields)) {
+      let oldVal = currentUser[key];
+      if (key === "birth_date" && oldVal instanceof Date) {
+        oldVal = oldVal.toISOString().slice(0, 10);
+      }
+      if (String(fields[key]) !== String(oldVal ?? "")) {
+        changes[key] = { old: currentUser[key] ?? null, new: fields[key] };
+      }
+    }
+
+    if (photos) {
+      if (JSON.stringify(photos) !== JSON.stringify(currentPhotos)) {
+        changes.photos = { old: currentPhotos, new: photos };
+      }
+    }
+
+    const pendingJson = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+
+    const userResult = await client.query(
+      `UPDATE users
+       SET status = 'pending',
+           pending_changes = $1,
+           rejection_reasons = '{}'::jsonb
+       WHERE id = $2
+       RETURNING id, username, email, full_name, bio, gender, looking_for, city, age, birth_date, search_radius, min_age, max_age, status, is_admin`,
+      [pendingJson, userId],
+    );
+    await client.query("COMMIT");
+
+    notifyAdmins(
+      "ახალი განაცხადი 📝",
+      `მომხმარებელმა (${fields.full_name || authUsername}) განაახლა პროფილი და ელოდება დადასტურებას.`,
+      { type: "PENDING_USER", userId },
+    );
+
+    return res.status(200).json({ success: true, data: userResult.rows[0] });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => {});
     console.error("Update Profile Error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: "პროფილის განახლება ვერ მოხერხდა" });
   } finally {
     client.release();
   }
@@ -211,12 +308,12 @@ export const getMe = async (req, res) => {
   }
 };
 
-// გამორიცხავს ორმხრივად დაბლოკილ და დისლაიქებულ იუზერებს სვაიპებიდან + მხარდაჭერილია პაგინაცია (limit / offset)
+// გამორიცხავს ორმხრივად დაბლოკილ, დისლაიქებულ და დაბანილ იუზერებს + პაგინაცია
 export const getDiscovery = async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 30, 1), 50);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
 
     const meResult = await pool.query(
       "SELECT latitude, longitude, search_radius, min_age, max_age, looking_for FROM users WHERE id = $1",
@@ -224,49 +321,48 @@ export const getDiscovery = async (req, res) => {
     );
     const me = meResult.rows[0];
 
-    if (!me || !me.latitude || !me.longitude) return res.json([]);
+    if (!me || me.latitude === null || me.longitude === null) return res.json([]);
+
+    const radius = Number(me.search_radius) || 50;
+    const minAge = me.min_age ?? 18;
+    const maxAge = me.max_age ?? 100;
+    const lookingFor = me.looking_for || "female";
 
     const discoveryResult = await pool.query(
       `WITH filtered_users AS (
           SELECT u.id, u.full_name, u.age, u.city, u.bio, u.interests,
             (6371 * acos(
-                LEAST(1, GREATEST(-1, 
-                  cos(radians($2)) * cos(radians(u.latitude)) * cos(radians(u.longitude) - radians($3)) + sin(radians($2)) * sin(radians(u.latitude))
+                LEAST(1, GREATEST(-1,
+                  cos(radians($2::float8)) * cos(radians(u.latitude::float8)) * cos(radians(u.longitude::float8) - radians($3::float8))
+                  + sin(radians($2::float8)) * sin(radians(u.latitude::float8))
                 ))
             )) AS distance
           FROM users u
-          WHERE u.id != $1 
+          WHERE u.id != $1
           AND u.age BETWEEN $5 AND $6
-          AND u.gender = $7
+          AND ($7 = 'both' OR u.gender = $7)
           AND u.status = 'approved'
+          AND COALESCE(u.is_banned, false) = false
           AND u.latitude IS NOT NULL
-          AND u.id NOT IN (SELECT to_user_id FROM likes WHERE from_user_id = $1)
-          AND u.id NOT IN (SELECT to_user_id FROM dislikes WHERE from_user_id = $1)
-          AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
-          AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
+          AND u.longitude IS NOT NULL
+          AND u.latitude::float8 BETWEEN $2::float8 - ($4::float8 / 111.0) AND $2::float8 + ($4::float8 / 111.0)
+          AND NOT EXISTS (SELECT 1 FROM likes l WHERE l.from_user_id = $1 AND l.to_user_id = u.id)
+          AND NOT EXISTS (SELECT 1 FROM dislikes d WHERE d.from_user_id = $1 AND d.to_user_id = u.id)
+          AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))
       )
-      SELECT f.*, 
+      SELECT f.id, f.full_name, f.age, f.city, f.bio, f.interests,
+             GREATEST(1, CEIL(f.distance))::int AS distance,
              COALESCE(
-               JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position, 'is_main', p.is_main) ORDER BY p.position ASC) 
+               JSON_AGG(JSON_BUILD_OBJECT('image_url', p.image_url, 'position', p.position, 'is_main', p.is_main) ORDER BY p.position ASC)
                FILTER (WHERE p.id IS NOT NULL), '[]'
              ) AS photos
       FROM filtered_users f
       LEFT JOIN photos p ON f.id = p.user_id
       WHERE f.distance <= $4
       GROUP BY f.id, f.full_name, f.age, f.city, f.bio, f.interests, f.distance
-      ORDER BY f.distance ASC 
+      ORDER BY f.distance ASC, f.id ASC
       LIMIT $8 OFFSET $9`,
-      [
-        userId,
-        me.latitude,
-        me.longitude,
-        me.search_radius,
-        me.min_age,
-        me.max_age,
-        me.looking_for,
-        limit,
-        offset,
-      ],
+      [userId, me.latitude, me.longitude, radius, minAge, maxAge, lookingFor, limit, offset],
     );
     res.json(discoveryResult.rows);
   } catch (err) {
@@ -275,64 +371,58 @@ export const getDiscovery = async (req, res) => {
   }
 };
 
-export const addLike = async (req, res) => {
-  const { targetUserId } = req.body;
-  const myId = req.user.id;
-  try {
-    await pool.query(
-      "INSERT INTO likes (from_user_id, to_user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-      [myId, targetUserId],
-    );
-    const reverseLike = await pool.query(
-      "SELECT id FROM likes WHERE from_user_id = $1 AND to_user_id = $2",
-      [targetUserId, myId],
-    );
-    let isMatch = false;
-    if (reverseLike.rows.length > 0) {
-      isMatch = true;
-      const [p1, p2] = [myId, targetUserId].sort();
-      await pool.query(
-        "INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        [p1, p2],
-      );
-    }
-    res.json({ success: true, isMatch });
-  } catch (err) {
-    res.status(500).json({ message: "შეცდომა ლაიქისას" });
-  }
-};
-
 export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
     const matchesResult = await pool.query(
-      `SELECT u.id, u.full_name, p.image_url as main_photo, msg.text as last_message_text, msg.created_at as last_message_at, COALESCE(unread.count, 0) as unread_count
-      FROM matches m
-      JOIN users u ON (u.id = CASE WHEN m.user1_id = $1 THEN m.user2_id ELSE m.user1_id END)
-      LEFT JOIN photos p ON p.user_id = u.id AND (p.position = 0 OR p.is_main = true)
-      LEFT JOIN LATERAL (SELECT text, created_at FROM messages WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1) ORDER BY created_at DESC LIMIT 1) msg ON true
-      LEFT JOIN (SELECT sender_id, COUNT(*) as count FROM messages WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id) unread ON unread.sender_id = u.id
-      WHERE (m.user1_id = $1 OR m.user2_id = $1)
-      AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id = $1)
-      AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id = $1)
-      ORDER BY last_message_at DESC NULLS LAST`,
+      `SELECT u.id, u.full_name, p.image_url AS main_photo,
+              msg.text AS last_message_text, msg.created_at AS last_message_at,
+              COALESCE(unread.count, 0)::int AS unread_count
+       FROM matches m
+       JOIN users u ON u.id = CASE WHEN m.user1_id = $1 THEN m.user2_id ELSE m.user1_id END
+       LEFT JOIN LATERAL (
+         SELECT image_url FROM photos WHERE user_id = u.id
+         ORDER BY is_main DESC, position ASC LIMIT 1
+       ) p ON true
+       LEFT JOIN LATERAL (
+         SELECT text, created_at FROM messages
+         WHERE (sender_id = $1 AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = $1)
+         ORDER BY created_at DESC LIMIT 1
+       ) msg ON true
+       LEFT JOIN (
+         SELECT sender_id, COUNT(*) AS count FROM messages
+         WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id
+       ) unread ON unread.sender_id = u.id
+       WHERE (m.user1_id = $1 OR m.user2_id = $1)
+         AND COALESCE(u.is_banned, false) = false
+         AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))
+       ORDER BY last_message_at DESC NULLS LAST, m.matched_at DESC`,
       [userId],
     );
     res.json(matchesResult.rows);
   } catch (err) {
+    console.error("GET MATCHES ERROR:", err);
     res.status(500).json({ error: "მონაცემების წამოღება ვერ მოხერხდა" });
   }
 };
 
 export const getChatMessages = async (req, res) => {
   try {
-    const { partnerId } = req.params;
+    const partnerId = toId(req.params.partnerId);
+    if (!partnerId) return res.status(400).json({ error: "არასწორი მომხმარებელი" });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 200, 1), 500);
     const messages = await pool.query(
-      `SELECT * FROM messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1) ORDER BY created_at ASC`,
-      [req.user.id, partnerId],
+      `SELECT * FROM (
+         SELECT * FROM messages
+         WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)
+         ORDER BY created_at DESC, id DESC LIMIT $3
+       ) t ORDER BY created_at ASC, id ASC`,
+      [req.user.id, partnerId, limit],
     );
     res.json(messages.rows);
   } catch (err) {
+    console.error("GET CHAT MESSAGES ERROR:", err);
     res.status(500).json({ error: "error" });
   }
 };
@@ -340,62 +430,58 @@ export const getChatMessages = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
-    const { receiverId, content } = req.body;
+    const receiverId = toId(req.body?.receiverId);
+    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
 
-    const blockCheck = await pool.query(
-      "SELECT id FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)",
+    if (!receiverId || receiverId === senderId) {
+      return res.status(400).json({ error: "არასწორი მიმღები" });
+    }
+    if (!content) {
+      return res.status(400).json({ error: "შეტყობინება ცარიელია" });
+    }
+    if (content.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({ error: "შეტყობინება ძალიან გრძელია" });
+    }
+
+    // ერთი მოთხოვნით: match არსებობს, ორივე მხარე აქტიურია და ბლოკი არ არის
+    const matchResult = await pool.query(
+      `SELECT m.id FROM matches m
+       JOIN users r ON r.id = $2 AND COALESCE(r.is_banned,false) = false
+       WHERE ((m.user1_id = $1 AND m.user2_id = $2) OR (m.user1_id = $2 AND m.user2_id = $1))
+         AND NOT EXISTS (
+           SELECT 1 FROM blocks b
+           WHERE (b.blocker_id = $1 AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = $1)
+         )
+       LIMIT 1`,
       [senderId, receiverId],
     );
 
-    if (blockCheck.rows.length > 0) {
+    if (matchResult.rows.length === 0) {
       return res.status(403).json({
         error: "ამ მომხმარებელთან შეტყობინების გაგზავნა შეუძლებელია.",
       });
     }
 
-    const matchResult = await pool.query(
-      `SELECT id FROM matches WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $2 AND user2_id = $1) LIMIT 1`,
-      [senderId, receiverId],
-    );
-
-    if (matchResult.rows.length === 0)
-      return res
-        .status(403)
-        .json({ error: "თქვენ არ გაქვთ Match ამ მომხმარებელთან" });
-
     const newMessage = await pool.query(
       "INSERT INTO messages (match_id, sender_id, receiver_id, text) VALUES ($1, $2, $3, $4) RETURNING *",
       [matchResult.rows[0].id, senderId, receiverId, content],
     );
+    const message = newMessage.rows[0];
 
-    io.to(receiverId.toString()).emit("new_message", newMessage.rows[0]);
-    io.to(senderId.toString()).emit("new_message", newMessage.rows[0]);
+    emitToUser(receiverId, "new_message", message);
+    emitToUser(senderId, "new_message", message);
 
-    const senderRes = await pool.query(
-      "SELECT full_name, username FROM users WHERE id = $1",
-      [senderId],
-    );
-    const senderName =
-      senderRes.rows[0]?.full_name ||
-      senderRes.rows[0]?.username ||
-      "მომხმარებელმა";
+    const senderRes = await pool.query("SELECT full_name, username FROM users WHERE id = $1", [senderId]);
+    const senderName = senderRes.rows[0]?.full_name || senderRes.rows[0]?.username || "მომხმარებელმა";
 
-    const formattedContent =
-      content && content.length > 50
-        ? `${content.substring(0, 50)}...`
-        : content;
+    const formattedContent = content.length > 50 ? `${content.substring(0, 50)}...` : content;
 
-    notifyUser(
-      receiverId,
-      `ახალი შეტყობინება: ${senderName}`,
-      formattedContent || "გამოგიგზავნათ შეტყობინება",
-      {
-        type: "chat_message",
-        senderId: senderId,
-      },
-    );
+    notifyUser(receiverId, `ახალი შეტყობინება: ${senderName}`, formattedContent, {
+      type: "chat_message",
+      senderId,
+    });
 
-    res.json(newMessage.rows[0]);
+    res.json(message);
   } catch (err) {
     console.error("SEND MESSAGE ERROR:", err);
     res.status(500).json({ error: "შეტყობინების გაგზავნა ვერ მოხერხდა" });
@@ -404,37 +490,55 @@ export const sendMessage = async (req, res) => {
 
 export const markAsRead = async (req, res) => {
   try {
+    const partnerId = toId(req.params.partnerId);
+    if (!partnerId) return res.status(400).json({ error: "არასწორი მომხმარებელი" });
+
     await pool.query(
       "UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE",
-      [req.params.partnerId, req.user.id],
+      [partnerId, req.user.id],
     );
     res.json({ success: true });
   } catch (err) {
+    console.error("MARK AS READ ERROR:", err);
     res.status(500).json({ error: "error" });
   }
 };
 
 export const getUserProfile = async (req, res) => {
   try {
-    const { userId } = req.query;
+    const targetId = toId(req.query.userId);
     const myId = req.user.id;
 
-    if (!userId) {
+    if (!targetId) {
       return res.status(400).json({ error: "userId პარამეტრი აუცილებელია" });
     }
 
-    const blockCheck = await pool.query(
-      "SELECT id FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)",
-      [myId, userId],
-    );
-
-    if (blockCheck.rows.length > 0) {
-      return res.status(403).json({ error: "პროფილი მიუწვდომელია" });
+    // ნებისმიერი პროფილი ხელმისაწვდომია მხოლოდ: საკუთარი, ადმინისტრატორისთვის,
+    // match-ისთვის, ან მისთვის ვინც მე დამილაიქა/ვინც მე დავლაიქე
+    if (targetId !== myId && !req.user.is_admin) {
+      const access = await pool.query(
+        `SELECT u.id FROM users u
+         WHERE u.id = $2
+           AND u.status = 'approved'
+           AND COALESCE(u.is_banned,false) = false
+           AND NOT EXISTS (
+             SELECT 1 FROM blocks b
+             WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1)
+           )
+           AND (
+             EXISTS (SELECT 1 FROM matches m WHERE (m.user1_id = $1 AND m.user2_id = u.id) OR (m.user1_id = u.id AND m.user2_id = $1))
+             OR EXISTS (SELECT 1 FROM likes l WHERE (l.from_user_id = $1 AND l.to_user_id = u.id) OR (l.from_user_id = u.id AND l.to_user_id = $1))
+           )`,
+        [myId, targetId],
+      );
+      if (access.rows.length === 0) {
+        return res.status(403).json({ error: "პროფილი მიუწვდომელია" });
+      }
     }
 
     const userResult = await pool.query(
       "SELECT id, username, full_name, bio, gender, city, age, interests FROM users WHERE id=$1",
-      [userId],
+      [targetId],
     );
 
     if (userResult.rows.length === 0) {
@@ -443,7 +547,7 @@ export const getUserProfile = async (req, res) => {
 
     const photosResult = await pool.query(
       "SELECT image_url, position, is_main FROM photos WHERE user_id=$1 ORDER BY position ASC",
-      [userId],
+      [targetId],
     );
 
     res.json({
@@ -453,27 +557,44 @@ export const getUserProfile = async (req, res) => {
     });
   } catch (err) {
     console.error("GET_USER_PROFILE ERROR:", err);
-    res
-      .status(500)
-      .json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
+    res.status(500).json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
   }
 };
 
 export const reportUser = async (req, res) => {
   try {
     const reporterId = req.user.id;
-    const { reportedUserId, reason, details } = req.body;
+    const reportedId = toId(req.body?.reportedUserId);
+    const reason = cleanText(req.body?.reason, REPORT_REASON_MAX);
+    const details = cleanText(req.body?.details, REPORT_DETAILS_MAX) || "";
 
-    if (!reportedUserId || !reason) {
-      return res
-        .status(400)
-        .json({ error: "reportedUserId და reason აუცილებელია" });
+    if (!reportedId || !reason) {
+      return res.status(400).json({ error: "reportedUserId და reason აუცილებელია" });
+    }
+    if (reportedId === reporterId) {
+      return res.status(400).json({ error: "საკუთარ თავზე რეპორტს ვერ გააგზავნით" });
     }
 
-    await pool.query(
-      "INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)",
-      [reporterId, reportedUserId, reason, details || ""],
+    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [reportedId]);
+    if (exists.rows.length === 0) {
+      return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
+    }
+
+    // იგივე წყვილზე 24 საათში ერთზე მეტი აქტიური რეპორტი არ იქმნება
+    const dup = await pool.query(
+      `SELECT 1 FROM reports
+       WHERE reporter_id = $1 AND reported_id = $2
+         AND created_at > NOW() - INTERVAL '24 hours'`,
+      [reporterId, reportedId],
     );
+    if (dup.rows.length === 0) {
+      await pool.query("INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)", [
+        reporterId,
+        reportedId,
+        reason,
+        details,
+      ]);
+    }
 
     res.json({ success: true, message: "რეპორტი წარმატებით გაიგზავნა" });
   } catch (err) {
@@ -485,26 +606,30 @@ export const reportUser = async (req, res) => {
 export const blockUser = async (req, res) => {
   try {
     const blockerId = req.user.id;
-    const { blockedUserId } = req.body;
+    const blockedId = toId(req.body?.blockedUserId);
 
-    if (!blockedUserId) {
+    if (!blockedId) {
       return res.status(400).json({ error: "blockedUserId აუცილებელია" });
     }
-
-    if (blockerId === parseInt(blockedUserId)) {
+    if (blockerId === blockedId) {
       return res.status(400).json({ error: "საკუთარ თავს ვერ დაბლოკავთ" });
     }
 
+    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [blockedId]);
+    if (exists.rows.length === 0) {
+      return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
+    }
+
     await pool.query(
-      "INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-      [blockerId, blockedUserId],
+      "INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT (blocker_id, blocked_id) DO NOTHING",
+      [blockerId, blockedId],
     );
 
     await pool.query(
-      `DELETE FROM matches 
-       WHERE (user1_id = $1 AND user2_id = $2) 
+      `DELETE FROM matches
+       WHERE (user1_id = $1 AND user2_id = $2)
           OR (user1_id = $2 AND user2_id = $1)`,
-      [blockerId, blockedUserId],
+      [blockerId, blockedId],
     );
 
     res.json({ success: true, message: "მომხმარებელი დაბლოკილია" });

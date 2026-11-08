@@ -1,0 +1,39 @@
+import rateLimit from "express-rate-limit";
+
+const make = (windowMs, limit, message, keyGenerator) =>
+  rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { message },
+    ...(keyGenerator ? { keyGenerator } : {}),
+  });
+
+// ყველა მოთხოვნაზე ზოგადი ლიმიტი (IP-ზე)
+export const globalLimiter = make(60 * 1000, 300, "ძალიან ბევრი მოთხოვნა. სცადეთ ცოტა ხანში.");
+
+// შესვლა: IP-ზე 20 მცდელობა 15 წუთში
+export const loginIpLimiter = make(15 * 60 * 1000, 20, "ძალიან ბევრი შესვლის მცდელობა. სცადეთ 15 წუთის შემდეგ.");
+
+// შესვლა: ერთ username-ზე 10 მცდელობა 15 წუთში (პაროლის გამოცნობისგან დაცვა)
+export const loginUserLimiter = make(
+  15 * 60 * 1000,
+  10,
+  "ამ ანგარიშზე ძალიან ბევრი მცდელობა. სცადეთ 15 წუთის შემდეგ.",
+  (req) =>
+    `u:${String(req.body?.username || "")
+      .toLowerCase()
+      .trim()}`,
+);
+
+// რეგისტრაცია და social-login: IP-ზე 10 საათში
+export const registerLimiter = make(60 * 60 * 1000, 10, "ძალიან ბევრი რეგისტრაციის მცდელობა. სცადეთ მოგვიანებით.");
+
+// შეტყობინებების გაგზავნა: მომხმარებელზე წუთში 30
+export const messageLimiter = make(
+  60 * 1000,
+  30,
+  "შეტყობინებებს ძალიან სწრაფად აგზავნით.",
+  (req) => `m:${req.user?.id ?? "anon"}`,
+);
