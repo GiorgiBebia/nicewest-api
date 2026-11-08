@@ -3,6 +3,15 @@ import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
 import { pool } from "../db/index.js";
+import { sendCodeEmail } from "../services/email.service.js";
+import {
+  CODE_TTL_MIN,
+  RESEND_COOLDOWN_SEC,
+  checkCode,
+  consumeCode,
+  dropCode,
+  issueCode,
+} from "../services/emailCode.service.js";
 
 dotenv.config();
 
@@ -167,6 +176,90 @@ const upsertDevice = (userId, d, clientIp) =>
     ],
   );
 
+// მოწყობილობის ველები, რომლებიც რეგისტრაციის დადასტურებამდე დროებით ინახება
+const pickDevice = (body) => {
+  const str = (v) => (typeof v === "string" ? v.slice(0, 200) : null);
+  return {
+    brand: str(body.brand),
+    modelName: str(body.modelName),
+    osName: str(body.osName),
+    osVersion: str(body.osVersion),
+    deviceType: Number.isInteger(body.deviceType) ? body.deviceType : null,
+    pushToken: str(body.pushToken),
+    deviceUuid: str(body.deviceUuid),
+  };
+};
+
+const insertUser = async ({ username, email, hash, latitude, longitude }) => {
+  const result = await pool.query(
+    `INSERT INTO users (username, email, password_hash, latitude, longitude, gender, looking_for)
+     VALUES ($1, $2, $3, $4, $5, NULL, NULL)
+     RETURNING id, username, email, status, is_admin, gender, birth_date, city, looking_for`,
+    [username, email, hash, latitude || null, longitude || null],
+  );
+  return result.rows[0];
+};
+
+const normalizeEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+const isSixDigits = (v) => typeof v === "string" && /^\d{6}$/.test(v.trim());
+
+// კოდის შექმნა და გაგზავნა. თუ გაგზავნა ვერ მოხერხდა, ახალ ჩანაწერს ვშლით,
+// რომ cooldown-მა მომხმარებელი უშედეგოდ არ დაბლოკოს (keepOnFail=true: ხელახლა გაგზავნისას ძველი payload რჩება).
+// აბრუნებს { ok: true } ან { ok: false, status, body }
+const sendCode = async ({ email, purpose, payload, keepOnFail = false }) => {
+  let code;
+  try {
+    code = await issueCode({ email, purpose, payload });
+  } catch (e) {
+    if (e.code === "COOLDOWN") {
+      return {
+        ok: false,
+        status: 429,
+        body: {
+          message: `კოდი ახლახან გაიგზავნა. სცადეთ ${e.retryAfter} წამში.`,
+          retryAfter: e.retryAfter,
+        },
+      };
+    }
+    if (e.code === "NO_PENDING") {
+      return {
+        ok: false,
+        status: 400,
+        body: { message: "რეგისტრაციის მონაცემები ვერ მოიძებნა. გთხოვთ თავიდან დაიწყოთ რეგისტრაცია." },
+      };
+    }
+    throw e;
+  }
+
+  try {
+    await sendCodeEmail({ to: email, code, purpose, ttlMinutes: CODE_TTL_MIN });
+    return { ok: true };
+  } catch (e) {
+    console.error("SEND CODE EMAIL ERROR:", e.message);
+    if (!keepOnFail) await dropCode(email, purpose).catch(() => {});
+    return {
+      ok: false,
+      status: 503,
+      body: { message: "ელფოსტის გაგზავნა ვერ მოხერხდა. სცადეთ მოგვიანებით." },
+    };
+  }
+};
+
+const codeFailureResponse = (check) =>
+  check.reason === "invalid"
+    ? {
+        message:
+          check.attemptsLeft > 0
+            ? `კოდი არასწორია. დარჩენილი მცდელობა: ${check.attemptsLeft}`
+            : "კოდი არასწორია. მცდელობები ამოიწურა, მოითხოვეთ ახალი კოდი.",
+        code: "CODE_INVALID",
+        attemptsLeft: check.attemptsLeft,
+      }
+    : {
+        message: "კოდს ვადა გაუვიდა ან მცდელობები ამოიწურა. მოითხოვეთ ახალი კოდი.",
+        code: "CODE_EXPIRED",
+      };
+
 export const register = async (req, res) => {
   try {
     const { username, email, password, registrationToken, deviceUuid, pushToken, latitude, longitude } = req.body;
@@ -290,14 +383,42 @@ export const register = async (req, res) => {
     }
 
     const hash = password ? await bcrypt.hash(password, 10) : null;
-    const result = await pool.query(
-      `INSERT INTO users (username, email, password_hash, latitude, longitude, gender, looking_for)
-       VALUES ($1, $2, $3, $4, $5, NULL, NULL)
-       RETURNING id, username, email, status, is_admin, gender, birth_date, city, looking_for`,
-      [usernameTrim, emailTrim, hash, latitude || null, longitude || null],
-    );
 
-    const newUser = result.rows[0];
+    // --- ჩვეულებრივი რეგისტრაცია: ანგარიშს ჯერ არ ვქმნით ---
+    // მონაცემებს დროებით ვინახავთ და ვაგზავნით ელფოსტის კოდს. მომხმარებელი შეიქმნება
+    // მხოლოდ POST /auth/register/verify-ზე, ამიტომ დაუდასტურებელი ანგარიშები ბაზაში არ ხვდება.
+    if (!verifiedByGoogle) {
+      const sent = await sendCode({
+        email: emailTrim,
+        purpose: "register",
+        payload: {
+          username: usernameTrim,
+          passwordHash: hash,
+          latitude: latitude || null,
+          longitude: longitude || null,
+          clientIp: clientIp || null,
+          device: pickDevice(req.body),
+        },
+      });
+      if (!sent.ok) return res.status(sent.status).json(sent.body);
+
+      return res.json({
+        success: true,
+        verificationRequired: true,
+        email: emailTrim,
+        codeTtlMinutes: CODE_TTL_MIN,
+        resendAfterSec: RESEND_COOLDOWN_SEC,
+      });
+    }
+
+    // --- Google-ით რეგისტრაცია: email უკვე დადასტურებულია Google-ის მიერ ---
+    const newUser = await insertUser({
+      username: usernameTrim,
+      email: emailTrim,
+      hash,
+      latitude,
+      longitude,
+    });
 
     // --- 4. მოწყობილობის ჩაწერა ---
     await upsertDevice(newUser.id, req.body, clientIp);
@@ -307,20 +428,9 @@ export const register = async (req, res) => {
       await trackUserIp(newUser.id, clientIp);
     }
 
-    if (verifiedByGoogle) {
-      // Google-ით რეგისტრირებულს პაროლის გარეშე პირდაპირ ვუბრუნებთ სესიას
-      const session = await buildLoginResponse(newUser);
-      return res.json({ success: true, ...session });
-    }
-
-    res.json({
-      success: true,
-      user: {
-        id: newUser.id,
-        username: newUser.username,
-        email: newUser.email,
-      },
-    });
+    // Google-ით რეგისტრირებულს პაროლის გარეშე პირდაპირ ვუბრუნებთ სესიას
+    const session = await buildLoginResponse(newUser);
+    return res.json({ success: true, ...session });
   } catch (err) {
     if (err.code === "23505") {
       return res.status(400).json({ message: "ეს მომხმარებელი ან Email უკვე გამოყენებულია" });
@@ -596,12 +706,164 @@ export const syncDevice = async (req, res) => {
   }
 };
 
-// პაროლის აღდგენა დროებით გამორთულია: წინა ვერსიაში ნებისმიერს შეეძლო
-// ნებისმიერი email-ის პაროლის შეცვლა. დასაბრუნებლად საჭიროა email-ით კოდის დადასტურება.
+// POST /auth/register/verify  { email, code }
+// კოდის დადასტურების შემდეგ იქმნება რეალური ანგარიში (წინა ვერსიის register-ის პასუხის იგივე ფორმატით).
+export const verifyRegistration = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+
+    if (!emailRegex.test(email) || !isSixDigits(code)) {
+      return res.status(400).json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
+    }
+
+    const check = await checkCode({ email, purpose: "register", code });
+    if (!check.ok) return res.status(400).json(codeFailureResponse(check));
+
+    const p = check.payload;
+    if (!p?.username || !p?.passwordHash) {
+      return res.status(400).json(codeFailureResponse({ reason: "expired" }));
+    }
+
+    // კოდის გაგზავნიდან ამ წუთამდე სხვას შეიძლებოდა დაეკავებინა username ან email
+    const existing = await pool.query(
+      "SELECT username FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)",
+      [p.username, email],
+    );
+    if (existing.rows.length > 0) {
+      return res.status(400).json({
+        message: "ეს მომხმარებლის სახელი ან Email უკვე გამოყენებულია. გთხოვთ თავიდან სცადოთ.",
+        code: "ALREADY_TAKEN",
+      });
+    }
+
+    let newUser;
+    try {
+      newUser = await insertUser({
+        username: p.username,
+        email,
+        hash: p.passwordHash,
+        latitude: p.latitude,
+        longitude: p.longitude,
+      });
+    } catch (err) {
+      if (err.code === "23505") {
+        return res.status(400).json({
+          message: "ეს მომხმარებელი ან Email უკვე გამოყენებულია",
+          code: "ALREADY_TAKEN",
+        });
+      }
+      throw err;
+    }
+
+    // ანგარიში შეიქმნა: კოდი იხარჯება (ერთჯერადია)
+    await consumeCode(check.id);
+
+    await upsertDevice(newUser.id, p.device || {}, p.clientIp);
+    if (p.clientIp) {
+      await trackUserIp(newUser.id, p.clientIp);
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        email: newUser.email,
+      },
+    });
+  } catch (err) {
+    console.error("VERIFY REGISTRATION ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა რეგისტრაციის დადასტურებისას" });
+  }
+};
+
+// POST /auth/register/resend  { email }
+// ახალი კოდი იმავე დროებითი რეგისტრაციის მონაცემებზე (მინიმუმ 60 წამის ინტერვალით)
+export const resendRegistrationCode = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
+    }
+
+    const sent = await sendCode({ email, purpose: "register", keepOnFail: true });
+    if (!sent.ok) return res.status(sent.status).json(sent.body);
+
+    res.json({ success: true, codeTtlMinutes: CODE_TTL_MIN, resendAfterSec: RESEND_COOLDOWN_SEC });
+  } catch (err) {
+    console.error("RESEND REGISTRATION CODE ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა" });
+  }
+};
+
+// POST /auth/forgot-password  { email }
+// პასუხი ყოველთვის ერთნაირია, რომ ვერავინ გაიგოს რომელი ელფოსტებია რეგისტრირებული
+export const forgotPassword = async (req, res) => {
+  const genericResponse = { success: true, codeTtlMinutes: CODE_TTL_MIN, resendAfterSec: RESEND_COOLDOWN_SEC };
+
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
+    }
+
+    const userResult = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1)", [email]);
+
+    if (userResult.rows.length > 0) {
+      // cooldown-ის ან გაგზავნის შეცდომის შედეგს მომხმარებელს არ ვუჩვენებთ (ანგარიშის არსებობა არ გამოვაჩინოთ)
+      await sendCode({ email, purpose: "reset_password", payload: null });
+    }
+
+    res.json(genericResponse);
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა" });
+  }
+};
+
+// POST /auth/reset-password  { email, code, newPassword }
+// პაროლის შეცვლა ელფოსტით მიღებული კოდით. წინა ვერსიაში ნებისმიერს შეეძლო ნებისმიერი
+// email-ის პაროლის შეცვლა, ახლა კოდის გარეშე შეცვლა შეუძლებელია.
 export const resetPassword = async (req, res) => {
-  return res.status(503).json({
-    message: "პაროლის აღდგენა დროებით მიუწვდომელია. თუ ანგარიშზე წვდომა დაკარგეთ, დაგვიკავშირდით.",
-  });
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    const newPassword = req.body?.newPassword;
+
+    if (!emailRegex.test(email) || !isSixDigits(code)) {
+      return res.status(400).json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 72) {
+      return res.status(400).json({ message: "პაროლი უნდა იყოს 8-დან 72 სიმბოლომდე" });
+    }
+
+    const check = await checkCode({ email, purpose: "reset_password", code });
+    if (!check.ok) return res.status(400).json(codeFailureResponse(check));
+
+    // კოდი ერთჯერადია: თუ ორი მოთხოვნა ერთდროულად მოვიდა, მხოლოდ ერთი გაივლის
+    if (!(await consumeCode(check.id))) {
+      return res.status(400).json(codeFailureResponse({ reason: "expired" }));
+    }
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    const upd = await pool.query("UPDATE users SET password_hash = $1 WHERE LOWER(email) = LOWER($2) RETURNING id", [
+      hash,
+      email,
+    ]);
+
+    if (upd.rows.length === 0) {
+      return res.status(400).json(codeFailureResponse({ reason: "expired" }));
+    }
+
+    // პაროლის შეცვლისას ყველა მოწყობილობაზე სესია უქმდება
+    await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [upd.rows[0].id]);
+
+    res.json({ success: true, message: "პაროლი წარმატებით შეიცვალა" });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    res.status(500).json({ message: "სერვერის შეცდომა პაროლის შეცვლისას" });
+  }
 };
 
 export const deleteAccount = async (req, res) => {
