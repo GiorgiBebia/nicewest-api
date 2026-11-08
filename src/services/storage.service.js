@@ -39,3 +39,32 @@ export const isOwnPhotoUrl = (value, userId) => {
   const prefix = `${base.replace(/\/+$/, "")}/storage/v1/object/public/${PHOTO_BUCKET}/${userId}/`;
   return value.startsWith(prefix) && !value.includes("..");
 };
+
+const DELETED_FOLDER = "deleted";
+
+// public URL -> ბაკეტის შიდა გზა ({userId}/{ფაილი}); სხვის ან უცხო URL-ს აბრუნებს null-ს
+const pathFromPhotoUrl = (url, userId) => {
+  const base = process.env.SUPABASE_URL;
+  if (!base || typeof url !== "string") return null;
+  const prefix = `${base.replace(/\/+$/, "")}/storage/v1/object/public/${PHOTO_BUCKET}/`;
+  if (!url.startsWith(prefix)) return null;
+  const path = decodeURIComponent(url.slice(prefix.length).split("?")[0]);
+  if (path.includes("..") || !path.startsWith(`${userId}/`)) return null;
+  return path;
+};
+
+// წაშლილი ფოტოების გადატანა: {userId}/{ფაილი} -> deleted/{userId}/{ფაილი}
+// ფაილს არ ვშლით, მხოლოდ ვცვლით მისამართს. შეცდომა არასდროს აგდებს მოთხოვნას (best-effort).
+export const moveUserPhotosToDeleted = async (userId, urls) => {
+  try {
+    const paths = [...new Set((urls || []).map((u) => pathFromPhotoUrl(u, userId)).filter(Boolean))];
+    if (paths.length === 0) return;
+    const bucket = getClient().storage.from(PHOTO_BUCKET);
+    for (const path of paths) {
+      const { error } = await bucket.move(path, `${DELETED_FOLDER}/${path}`);
+      if (error) console.error("MOVE PHOTO TO DELETED ERROR:", path, error.message);
+    }
+  } catch (err) {
+    console.error("MOVE PHOTOS TO DELETED ERROR:", err);
+  }
+};

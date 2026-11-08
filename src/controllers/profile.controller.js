@@ -1,7 +1,7 @@
 import { pool } from "../db/index.js";
 import { emitToUser } from "../socket.js";
 import { notifyAdmins, notifyUser } from "../services/notification.service.js";
-import { createPhotoUploadTarget, isOwnPhotoUrl } from "../services/storage.service.js";
+import { createPhotoUploadTarget, isOwnPhotoUrl, moveUserPhotosToDeleted } from "../services/storage.service.js";
 
 const MAX_PHOTOS = 6;
 const MAX_MESSAGE_LENGTH = 2000;
@@ -208,6 +208,7 @@ export const updateProfile = async (req, res) => {
     await client.query("BEGIN");
 
     if (isAdmin) {
+      let removedUrls = [];
       const keys = Object.keys(fields);
       if (keys.length > 0) {
         const sets = keys.map((k, i) => `${k} = $${i + 1}`);
@@ -222,6 +223,9 @@ export const updateProfile = async (req, res) => {
       }
 
       if (photos) {
+        const oldRes = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
+        const keep = new Set(photos.map((p) => p.image_url));
+        removedUrls = oldRes.rows.map((r) => r.image_url).filter((u) => !keep.has(u));
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
         for (const p of photos) {
           await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
@@ -235,12 +239,13 @@ export const updateProfile = async (req, res) => {
 
       const me = await client.query("SELECT * FROM users WHERE id = $1", [userId]);
       await client.query("COMMIT");
+      await moveUserPhotosToDeleted(userId, removedUrls);
       const { password_hash, ...safe } = me.rows[0];
       return res.status(200).json({ success: true, data: safe });
     }
 
     const currentUserRes = await client.query(
-      "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age FROM users WHERE id = $1 FOR UPDATE",
+      "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age, pending_changes FROM users WHERE id = $1 FOR UPDATE",
       [userId],
     );
     const currentUser = currentUserRes.rows[0] || {};
@@ -284,6 +289,17 @@ export const updateProfile = async (req, res) => {
       [pendingJson, userId],
     );
     await client.query("COMMIT");
+
+    // წინა (ჯერ დაუდასტურებელი) განაცხადის ფოტოები, რომლებიც აღარ გვჭირდება
+    const prevPendingUrls = (currentUser.pending_changes?.photos?.new || []).map((p) => p?.image_url);
+    const stillNeeded = new Set([
+      ...currentPhotos.map((p) => p.image_url),
+      ...(changes.photos?.new || []).map((p) => p.image_url),
+    ]);
+    await moveUserPhotosToDeleted(
+      userId,
+      prevPendingUrls.filter((u) => u && !stillNeeded.has(u)),
+    );
 
     notifyAdmins(
       "ახალი განაცხადი 📝",

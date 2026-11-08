@@ -4,6 +4,7 @@ import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
 import { pool } from "../db/index.js";
 import { sendCodeEmail } from "../services/email.service.js";
+import { moveUserPhotosToDeleted } from "../services/storage.service.js";
 import {
   CODE_TTL_MIN,
   RESEND_COOLDOWN_SEC,
@@ -873,6 +874,14 @@ export const deleteAccount = async (req, res) => {
 
     await client.query("BEGIN");
 
+    // ანგარიშის ფოტოები (გამოქვეყნებული + განხილვის მოლოდინში) შემდეგ გადავიტანოთ deleted/ საქაღალდეში
+    const photoRows = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
+    const pendRow = await client.query("SELECT pending_changes FROM users WHERE id = $1", [userId]);
+    const photoUrls = [
+      ...photoRows.rows.map((r) => r.image_url),
+      ...(pendRow.rows[0]?.pending_changes?.photos?.new || []).map((p) => p?.image_url),
+    ];
+
     // 1. დაკავშირებული დამხმარე ცხრილების გაწმენდა
     await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [userId]);
     await client.query("DELETE FROM user_devices WHERE user_id = $1", [userId]);
@@ -894,6 +903,7 @@ export const deleteAccount = async (req, res) => {
     await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
     await client.query("COMMIT");
+    await moveUserPhotosToDeleted(userId, photoUrls);
 
     res.json({
       success: true,

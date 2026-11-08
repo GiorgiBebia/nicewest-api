@@ -1,4 +1,5 @@
 import { pool } from "../db/index.js";
+import { moveUserPhotosToDeleted } from "../services/storage.service.js";
 import { notifyUser, sendExpoNotifications } from "../services/notification.service.js";
 
 const toId = (value) => {
@@ -204,6 +205,10 @@ export const updateUserStatus = async (req, res) => {
     }
 
     const pendingChanges = userRes.rows[0].pending_changes;
+    const liveRes = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
+    const liveUrls = liveRes.rows.map((r) => r.image_url);
+    const pendingNewUrls = (pendingChanges?.photos?.new || []).map((p) => p?.image_url).filter(Boolean);
+    let urlsToMove = [];
 
     if (finalStatus === "approved" && pendingChanges) {
       // თუ დამტკიცდა, pending_changes-დან ახალი მნიშვნელობები გადავიტანოთ ძირითად ველებში
@@ -241,6 +246,7 @@ export const updateUserStatus = async (req, res) => {
       // თუ ფოტოებიც შეიცვალა
       if (pendingChanges.photos && pendingChanges.photos.new) {
         const newPhotos = pendingChanges.photos.new;
+        urlsToMove = liveUrls.filter((u) => !pendingNewUrls.includes(u));
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
         for (let i = 0; i < newPhotos.length; i++) {
           const photo = newPhotos[i];
@@ -271,6 +277,12 @@ export const updateUserStatus = async (req, res) => {
     const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, adminId, userId]);
 
     await client.query("COMMIT");
+
+    // უარყოფისას განაცხადის ახალი ფოტოები აღარავის სჭირდება
+    if (finalStatus !== "approved") {
+      urlsToMove = pendingNewUrls.filter((u) => !liveUrls.includes(u));
+    }
+    await moveUserPhotosToDeleted(userId, urlsToMove);
 
     // ნოთიფიკაცია
     if (finalStatus === "approved") {
