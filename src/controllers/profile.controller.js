@@ -213,7 +213,7 @@ export const updateProfile = async (req, res) => {
         const sets = keys.map((k, i) => `${k} = $${i + 1}`);
         await client.query(
           `UPDATE users SET ${sets.join(", ")},
-             status = COALESCE(status, 'approved'),
+             status = 'approved',
              pending_changes = NULL,
              rejection_reasons = '{}'::jsonb
            WHERE id = $${keys.length + 1}`,
