@@ -1,6 +1,7 @@
 import { pool } from "../db/index.js";
 import { emitToUser } from "../socket.js";
 import { notifyAdmins, notifyUser } from "../services/notification.service.js";
+import { createPhotoUploadTarget, isOwnPhotoUrl } from "../services/storage.service.js";
 
 const MAX_PHOTOS = 6;
 const MAX_MESSAGE_LENGTH = 2000;
@@ -10,16 +11,6 @@ const REPORT_DETAILS_MAX = 1000;
 const toId = (value) => {
   const n = Number(value);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
-};
-
-const isHttpUrl = (value) => {
-  if (typeof value !== "string" || value.length > 1000) return false;
-  try {
-    const u = new URL(value);
-    return u.protocol === "https:" || u.protocol === "http:";
-  } catch {
-    return false;
-  }
 };
 
 const cleanText = (value, max) => {
@@ -38,7 +29,7 @@ const ageFromBirthDate = (birthDate) => {
 };
 
 // შემოსული ველების გასუფთავება და ვალიდაცია. აბრუნებს { fields, photos } ან { error }
-const sanitizeProfileInput = (body) => {
+const sanitizeProfileInput = (body, userId) => {
   const fields = {};
 
   const full_name = cleanText(body.full_name, 60);
@@ -119,7 +110,7 @@ const sanitizeProfileInput = (body) => {
     photos = [];
     for (let i = 0; i < body.photos.length; i++) {
       const p = body.photos[i];
-      if (!p || !isHttpUrl(p.image_url)) {
+      if (!p || !isOwnPhotoUrl(p.image_url, userId)) {
         return { error: "ფოტოს მისამართი არასწორია" };
       }
       photos.push({ image_url: p.image_url, position: i, is_main: i === 0 });
@@ -127,6 +118,28 @@ const sanitizeProfileInput = (body) => {
   }
 
   return { fields, photos };
+};
+
+const PHOTO_TYPES = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+
+// ფოტოს ატვირთვის ბილეთი: აპი ამით ტვირთავს პირდაპირ Supabase Storage-ზე (anon key-ის გარეშე)
+export const createPhotoUploadUrl = async (req, res) => {
+  try {
+    const ext = PHOTO_TYPES[req.body?.contentType];
+    if (!ext) {
+      return res.status(400).json({ message: "ფოტოს ფორმატი არასწორია (JPEG, PNG ან WebP)" });
+    }
+    const index = Number(req.body?.index);
+    if (!Number.isInteger(index) || index < 0 || index >= MAX_PHOTOS) {
+      return res.status(400).json({ message: "ფოტოს ნომერი არასწორია" });
+    }
+
+    const target = await createPhotoUploadTarget(req.user.id, index, ext);
+    res.json({ success: true, ...target });
+  } catch (err) {
+    console.error("PHOTO UPLOAD URL ERROR:", err);
+    res.status(500).json({ message: "ატვირთვის მომზადება ვერ მოხერხდა" });
+  }
 };
 
 // ლოკაციის განახლება
@@ -156,7 +169,7 @@ export const updateLocation = async (req, res) => {
 };
 
 export const updateProfile = async (req, res) => {
-  const parsed = sanitizeProfileInput(req.body || {});
+  const parsed = sanitizeProfileInput(req.body || {}, req.user.id);
   if (parsed.error) {
     return res.status(400).json({ success: false, message: parsed.error });
   }
