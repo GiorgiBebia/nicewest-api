@@ -29,7 +29,7 @@ const ageFromBirthDate = (birthDate) => {
 };
 
 // შემოსული ველების გასუფთავება და ვალიდაცია. აბრუნებს { fields, photos } ან { error }
-const sanitizeProfileInput = (body, userId) => {
+const sanitizeProfileInput = (body, userId, knownPhotoUrls = new Set()) => {
   const fields = {};
 
   const full_name = cleanText(body.full_name, 60);
@@ -110,7 +110,8 @@ const sanitizeProfileInput = (body, userId) => {
     photos = [];
     for (let i = 0; i < body.photos.length; i++) {
       const p = body.photos[i];
-      if (!p || !isOwnPhotoUrl(p.image_url, userId)) {
+      if (!p || !(isOwnPhotoUrl(p.image_url, userId) || knownPhotoUrls.has(p.image_url))) {
+        console.warn("PHOTO URL REJECTED:", { userId, url: String(p?.image_url).slice(0, 300) });
         return { error: "ფოტოს მისამართი არასწორია" };
       }
       photos.push({ image_url: p.image_url, position: i, is_main: i === 0 });
@@ -168,8 +169,31 @@ export const updateLocation = async (req, res) => {
   }
 };
 
+// უკვე შენახული (ძველი ან განხილვის მოლოდინში მყოფი) ფოტოები ისევ დასაშვებია
+const loadKnownPhotoUrls = async (userId) => {
+  try {
+    const r = await pool.query(
+      `SELECT image_url AS url FROM photos WHERE user_id = $1
+       UNION
+       SELECT e->>'image_url' AS url
+       FROM users u,
+            jsonb_array_elements(
+              CASE WHEN jsonb_typeof(u.pending_changes::jsonb->'photos'->'new') = 'array'
+                   THEN u.pending_changes::jsonb->'photos'->'new' ELSE '[]'::jsonb END
+            ) e
+       WHERE u.id = $1`,
+      [userId],
+    );
+    return new Set(r.rows.map((x) => x.url).filter(Boolean));
+  } catch (err) {
+    console.error("LOAD KNOWN PHOTOS ERROR:", err);
+    return new Set();
+  }
+};
+
 export const updateProfile = async (req, res) => {
-  const parsed = sanitizeProfileInput(req.body || {}, req.user.id);
+  const known = req.body?.photos !== undefined ? await loadKnownPhotoUrls(req.user.id) : new Set();
+  const parsed = sanitizeProfileInput(req.body || {}, req.user.id, known);
   if (parsed.error) {
     return res.status(400).json({ success: false, message: parsed.error });
   }
