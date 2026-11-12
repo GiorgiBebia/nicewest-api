@@ -15,4 +15,3 @@ export const emitToAdmins = (event, payload) => {
   if (!ioInstance) return;
   ioInstance.to("admins").emit(event, payload);
 };
-``;
