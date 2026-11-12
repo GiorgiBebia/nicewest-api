@@ -14,6 +14,7 @@ import authRoutes from "./routes/auth.routes.js";
 import likeRoutes from "./routes/like.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import { initLikeResetCron } from "./services/likeReset.cron.js";
+import { initMatchCron } from "./services/matchExpiry.cron.js";
 import { globalLimiter } from "./middleware/rateLimit.middleware.js";
 
 if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
@@ -77,12 +78,14 @@ io.use(async (socket, next) => {
     if (!token) return next(new Error("UNAUTHORIZED"));
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const r = await pool.query("SELECT id FROM users WHERE id = $1 AND COALESCE(is_banned,false) = false", [
-      decoded.id,
-    ]);
+    const r = await pool.query(
+      "SELECT id, COALESCE(is_admin,false) AS is_admin FROM users WHERE id = $1 AND COALESCE(is_banned,false) = false",
+      [decoded.id],
+    );
     if (r.rows.length === 0) return next(new Error("UNAUTHORIZED"));
 
     socket.userId = Number(r.rows[0].id);
+    socket.isAdmin = r.rows[0].is_admin === true;
     next();
   } catch (e) {
     next(new Error("UNAUTHORIZED"));
@@ -92,12 +95,15 @@ io.use(async (socket, next) => {
 io.on("connection", (socket) => {
   // მომხმარებელი მხოლოდ საკუთარ ოთახში შედის (კლიენტის "join" აღარ გვჭირდება)
   socket.join(String(socket.userId));
+  // ადმინები ერთიან ოთახში, რომ განხილვის "დაკავების" ცვლილებები ერთმანეთს ეცნობოთ
+  if (socket.isAdmin) socket.join("admins");
   socket.on("disconnect", () => {});
 });
 
 setIo(io);
 
 initLikeResetCron();
+initMatchCron();
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

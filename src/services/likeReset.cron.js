@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { pool } from "../db/index.js";
-import { notifyUser } from "./notification.service.js";
+import { notifyUserT } from "./notification.service.js";
 
 export const initLikeResetCron = () => {
   // ყოველ 5 წუთში ერთხელ შემოწმება
@@ -18,10 +18,10 @@ export const initLikeResetCron = () => {
       const result = await pool.query(query);
 
       for (const row of result.rows) {
-        await notifyUser(
+        await notifyUserT(
           row.id,
-          "მოწონებები განახლდა! 🎉",
-          "შენი 30 დღიური მოწონება კვლავ აქტიურია. დაბრუნდი აპლიკაციაში!",
+          "likes_reset",
+          { count: 30 },
           { type: "likes_reset" },
         );
       }

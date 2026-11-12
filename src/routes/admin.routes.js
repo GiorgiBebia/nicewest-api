@@ -9,6 +9,8 @@ import {
   banUserByAdmin, // ახალი
   getChatHistoryForAdmin,
   sendPushNotification,
+  claimReview,
+  releaseReview,
 } from "../controllers/admin.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import { isAdmin } from "../middleware/admin.middleware.js";
@@ -21,6 +23,10 @@ router.get("/search-users", authMiddleware, isAdmin, searchUsers);
 // როუტები ვერიფიკაციისთვის
 router.get("/pending-users", authMiddleware, isAdmin, getPendingUsers);
 router.put("/update-status", authMiddleware, isAdmin, updateUserStatus);
+
+// განხილვის "დაკავება": ორი ადმინი ერთ მომხმარებელს ერთდროულად ვერ განიხილავს
+router.post("/review/claim", authMiddleware, isAdmin, claimReview); // ასევე heartbeat-ია (ვადას ახლებს)
+router.post("/review/release", authMiddleware, isAdmin, releaseReview);
 
 // ახალი როუტები რეპორტების მართვისთვის
 router.get("/reports", authMiddleware, isAdmin, getAdminReports);

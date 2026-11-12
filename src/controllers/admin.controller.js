@@ -1,6 +1,14 @@
 import { pool } from "../db/index.js";
-import { moveUserPhotosToDeleted } from "../services/storage.service.js";
-import { notifyUser, sendExpoNotifications } from "../services/notification.service.js";
+import {
+  archiveRejectedPhotos,
+  moveUserPhotosToDeleted,
+} from "../services/storage.service.js";
+import {
+  notifyUserT,
+  sendExpoNotifications,
+} from "../services/notification.service.js";
+import { emitToAdmins } from "../socket.js";
+import { REVIEW_LOCK_TTL_MINUTES } from "../services/matchConfig.js";
 
 const toId = (value) => {
   const n = Number(value);
@@ -68,7 +76,8 @@ export const getStats = async (req, res) => {
 
 export const searchUsers = async (req, res) => {
   try {
-    const query = typeof req.query.query === "string" ? req.query.query.trim() : "";
+    const query =
+      typeof req.query.query === "string" ? req.query.query.trim() : "";
 
     if (!query || query.length < 2 || query.length > 60) {
       return res.status(200).json({ success: true, data: [] });
@@ -84,7 +93,9 @@ export const searchUsers = async (req, res) => {
       LIMIT 20
     `;
 
-    const result = await pool.query(searchQuery, [`%${query.replace(/[\\%_]/g, "\\$&")}%`]);
+    const result = await pool.query(searchQuery, [
+      `%${query.replace(/[\\%_]/g, "\\$&")}%`,
+    ]);
 
     return res.status(200).json({
       success: true,
@@ -104,6 +115,11 @@ export const getPendingUsers = async (req, res) => {
     let query = `
       SELECT u.id, u.username, u.email, u.full_name, u.bio, u.city, u.age, u.gender,
              u.birth_date, u.status, u.pending_changes, u.rejection_reasons,
+             u.review_locked_by,
+             (u.review_locked_by IS NOT NULL
+               AND u.review_locked_at > NOW() - INTERVAL '${REVIEW_LOCK_TTL_MINUTES} minutes') AS review_lock_active,
+             (SELECT a.username FROM users a WHERE a.id = u.review_locked_by) AS review_locked_by_username,
+             md5(COALESCE(u.pending_changes::text, '')) AS pending_version,
              COALESCE(
                json_agg(
                  json_build_object(
@@ -177,6 +193,116 @@ export const getPendingReports = async (req, res) => {
   }
 };
 
+const REJECTION_FLAGS = [
+  "photos",
+  "full_name",
+  "city",
+  "age",
+  "gender",
+  "looking_for",
+  "bio",
+];
+const PHOTO_REASON_MAX = 60;
+
+const lockIsFresh = (lockedBy, lockedAt) =>
+  !!lockedBy &&
+  !!lockedAt &&
+  Date.now() - new Date(lockedAt).getTime() <
+    REVIEW_LOCK_TTL_MINUTES * 60 * 1000;
+
+// ადმინი იკავებს განსახილველ მომხმარებელს. იგივე endpoint heartbeat-ადაც გამოიყენება (ვადას ახლებს).
+export const claimReview = async (req, res) => {
+  try {
+    const userId = toId(req.body?.userId);
+    const adminId = req.user.id;
+    if (!userId)
+      return res
+        .status(400)
+        .json({ success: false, message: "userId is required" });
+
+    const prev = await pool.query(
+      "SELECT review_locked_by, review_locked_at FROM users WHERE id = $1",
+      [userId],
+    );
+    if (prev.rowCount === 0)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    const wasMine =
+      Number(prev.rows[0].review_locked_by) === adminId &&
+      lockIsFresh(adminId, prev.rows[0].review_locked_at);
+
+    const upd = await pool.query(
+      `UPDATE users
+       SET review_locked_by = $2, review_locked_at = NOW()
+       WHERE id = $1
+         AND (review_locked_by IS NULL
+              OR review_locked_by = $2
+              OR review_locked_at IS NULL
+              OR review_locked_at < NOW() - make_interval(mins => $3::int))
+       RETURNING md5(COALESCE(pending_changes::text, '')) AS pending_version, status`,
+      [userId, adminId, REVIEW_LOCK_TTL_MINUTES],
+    );
+
+    if (upd.rowCount === 0) {
+      const who = await pool.query(
+        "SELECT a.id, a.username, a.full_name FROM users u JOIN users a ON a.id = u.review_locked_by WHERE u.id = $1",
+        [userId],
+      );
+      const a = who.rows[0] || {};
+      return res.status(409).json({
+        success: false,
+        code: "LOCKED",
+        message: "ამ მომხმარებელს ამჟამად სხვა ადმინისტრატორი ამოწმებს",
+        lockedBy: {
+          id: a.id ? Number(a.id) : null,
+          username: a.username || a.full_name || "admin",
+        },
+      });
+    }
+
+    if (!wasMine) {
+      emitToAdmins("review_lock_changed", {
+        userId,
+        lockedBy: { id: adminId, username: req.user.username },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      pendingVersion: upd.rows[0].pending_version,
+      status: upd.rows[0].status,
+    });
+  } catch (error) {
+    console.error("Claim Review Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const releaseReview = async (req, res) => {
+  try {
+    const userId = toId(req.body?.userId);
+    if (!userId)
+      return res
+        .status(400)
+        .json({ success: false, message: "userId is required" });
+
+    const upd = await pool.query(
+      `UPDATE users SET review_locked_by = NULL, review_locked_at = NULL
+       WHERE id = $1 AND review_locked_by = $2
+       RETURNING id`,
+      [userId, req.user.id],
+    );
+    if (upd.rowCount > 0)
+      emitToAdmins("review_lock_changed", { userId, lockedBy: null });
+
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Release Review Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const updateUserStatus = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -184,30 +310,107 @@ export const updateUserStatus = async (req, res) => {
     const rejectionReasons = req.body?.rejectionReasons;
     const adminId = req.user.id;
 
-    if (!userId || !rejectionReasons || typeof rejectionReasons !== "object" || Array.isArray(rejectionReasons)) {
+    if (
+      !userId ||
+      !rejectionReasons ||
+      typeof rejectionReasons !== "object" ||
+      Array.isArray(rejectionReasons)
+    ) {
       return res.status(400).json({
         success: false,
         message: "userId and rejectionReasons are required",
       });
     }
 
-    const hasRejections = Object.values(rejectionReasons).some((value) => value === true);
-    const finalStatus = hasRejections ? "rejected" : "approved";
-    const reasonsJson = JSON.stringify(rejectionReasons);
-
     await client.query("BEGIN");
 
-    // წამოვიღოთ მომხმარებლის pending_changes
-    const userRes = await client.query("SELECT pending_changes FROM users WHERE id = $1 FOR UPDATE", [userId]);
+    // წამოვიღოთ მომხმარებლის pending_changes + განხილვის მდგომარეობა
+    const userRes = await client.query(
+      `SELECT pending_changes, status, review_locked_by, review_locked_at,
+              md5(COALESCE(pending_changes::text, '')) AS pending_version
+       FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
     if (userRes.rowCount === 0) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
-    const pendingChanges = userRes.rows[0].pending_changes;
-    const liveRes = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
+    const row = userRes.rows[0];
+
+    // სხვა ადმინის მიერ დაკავებულ მომხმარებელს ვერ დავამუშავებთ
+    if (
+      lockIsFresh(row.review_locked_by, row.review_locked_at) &&
+      Number(row.review_locked_by) !== adminId
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        code: "LOCKED",
+        message: "ამ მომხმარებელს ამჟამად სხვა ადმინისტრატორი ამოწმებს",
+      });
+    }
+
+    // ახალი აპი გზავნის pendingVersion-ს: თუ განხილვისას მომხმარებელმა პროფილი შეცვალა, ძველ მონაცემებზე არ ვადასტურებთ
+    if (req.body?.pendingVersion !== undefined) {
+      if (
+        row.status !== "pending" ||
+        String(req.body.pendingVersion) !== row.pending_version
+      ) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          success: false,
+          code: "STALE",
+          message:
+            "მომხმარებელმა ინფორმაცია შეცვალა ან უკვე განხილულია. გახსენით თავიდან.",
+        });
+      }
+    }
+
+    const pendingChanges = row.pending_changes;
+    const liveRes = await client.query(
+      "SELECT image_url FROM photos WHERE user_id = $1",
+      [userId],
+    );
     const liveUrls = liveRes.rows.map((r) => r.image_url);
-    const pendingNewUrls = (pendingChanges?.photos?.new || []).map((p) => p?.image_url).filter(Boolean);
+    const pendingNewUrls = (pendingChanges?.photos?.new || [])
+      .map((p) => p?.image_url)
+      .filter(Boolean);
+
+    // უარყოფილი ველები: მხოლოდ ცნობილი ველები, true/false
+    const cleanReasons = {};
+    for (const k of REJECTION_FLAGS)
+      cleanReasons[k] = rejectionReasons[k] === true;
+
+    // კონკრეტული ფოტოების უარყოფა: მხოლოდ ამ მომხმარებლის (ძველი ან მოლოდინში მყოფი) ფოტოები
+    const allowedUrls = new Set([...liveUrls, ...pendingNewUrls]);
+    const rawRejected = Array.isArray(req.body?.rejectedPhotos)
+      ? req.body.rejectedPhotos
+      : [];
+    const rejectedPhotos = [];
+    for (const item of rawRejected) {
+      const url = typeof item === "string" ? item : item?.url;
+      if (typeof url !== "string" || !allowedUrls.has(url)) continue;
+      if (rejectedPhotos.some((r) => r.url === url)) continue;
+      const reason =
+        typeof item === "object" && typeof item.reason === "string"
+          ? item.reason.trim().slice(0, PHOTO_REASON_MAX)
+          : "";
+      rejectedPhotos.push({ url, reason });
+    }
+    if (rejectedPhotos.length > 0) cleanReasons.photos = true;
+
+    const hasRejections = Object.values(cleanReasons).some(
+      (value) => value === true,
+    );
+    const finalStatus = hasRejections ? "rejected" : "approved";
+    const reasonsJson = JSON.stringify({
+      ...cleanReasons,
+      rejected_photos: rejectedPhotos,
+    });
+
     let urlsToMove = [];
 
     if (finalStatus === "approved" && pendingChanges) {
@@ -252,53 +455,59 @@ export const updateUserStatus = async (req, res) => {
           const photo = newPhotos[i];
           if (photo && photo.image_url) {
             const photoPos = photo.position !== undefined ? photo.position : i;
-            await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
-              userId,
-              photo.image_url,
-              photoPos,
-              photoPos === 0,
-            ]);
+            await client.query(
+              "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
+              [userId, photo.image_url, photoPos, photoPos === 0],
+            );
           }
         }
       }
     }
 
-    // სტატუსის, rejection_reasons-ის, reviewed_by-ისა და reviewed_at-ის განახლება
+    // სტატუსი, rejection_reasons, reviewed_by/at. უარყოფისას pending_changes რჩება (მომხმარებლის "დრაფტი"),
+    // დამტკიცებისას ირეცხება. განხილვის "დაკავება" ყოველთვის იხსნება.
     const updateStatusQuery = `
       UPDATE users 
-      SET status = $1, 
+      SET status = $1::text, 
           rejection_reasons = $2, 
-          pending_changes = NULL,
+          pending_changes = CASE WHEN $1::text = 'approved' THEN NULL ELSE pending_changes END,
           reviewed_by = $3,
-          reviewed_at = NOW()
+          reviewed_at = NOW(),
+          review_locked_by = NULL,
+          review_locked_at = NULL
       WHERE id = $4 
       RETURNING id, status, rejection_reasons, reviewed_by, reviewed_at
     `;
-    const result = await client.query(updateStatusQuery, [finalStatus, reasonsJson, adminId, userId]);
+    const result = await client.query(updateStatusQuery, [
+      finalStatus,
+      reasonsJson,
+      adminId,
+      userId,
+    ]);
 
     await client.query("COMMIT");
 
-    // უარყოფისას განაცხადის ახალი ფოტოები აღარავის სჭირდება
-    if (finalStatus !== "approved") {
-      urlsToMove = pendingNewUrls.filter((u) => !liveUrls.includes(u));
-    }
-    await moveUserPhotosToDeleted(userId, urlsToMove);
-
-    // ნოთიფიკაცია
     if (finalStatus === "approved") {
-      notifyUser(
-        userId,
-        "პროფილი დადასტურებულია! 🎉",
-        "თქვენი განაცხადი წარმატებით დამოწმდა. ახლა შეგიძლიათ ისარგებლოთ აპლიკაციით.",
-        { status: "approved" },
-      );
+      await moveUserPhotosToDeleted(userId, urlsToMove);
     } else {
-      notifyUser(
+      // ორიგინალი რჩება დრაფტისთვის, არქივში deleted/{userId}/rejected/ იწერება ასლი
+      await archiveRejectedPhotos(
         userId,
-        "პროფილის განაცხადი უარყოფილია ⚠️",
-        "თქვენს პროფილში დაფიქსირდა ხარვეზი. გთხოვთ შეამოწმოთ დეტალები და განაახლოთ პროფილი.",
-        { status: "rejected" },
+        rejectedPhotos.map((r) => r.url),
       );
+    }
+
+    emitToAdmins("review_lock_changed", {
+      userId,
+      lockedBy: null,
+      resolved: true,
+    });
+
+    // ნოთიფიკაცია (მომხმარებლის ენაზე)
+    if (finalStatus === "approved") {
+      notifyUserT(userId, "profile_approved", {}, { status: "approved" });
+    } else {
+      notifyUserT(userId, "profile_rejected", {}, { status: "rejected" });
     }
 
     res.status(200).json({
@@ -342,11 +551,17 @@ export const resolveReport = async (req, res) => {
   try {
     const reportId = toId(req.body?.reportId);
     if (!reportId) {
-      return res.status(400).json({ success: false, message: "reportId is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "reportId is required" });
     }
 
-    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [reportId]);
-    res.status(200).json({ success: true, message: "Report resolved successfully" });
+    await pool.query("UPDATE reports SET status = 'resolved' WHERE id = $1", [
+      reportId,
+    ]);
+    res
+      .status(200)
+      .json({ success: true, message: "Report resolved successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -356,12 +571,17 @@ export const banUserByAdmin = async (req, res) => {
   const client = await pool.connect();
   try {
     const userId = toId(req.body?.userId);
-    const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0, 300) : "";
+    const reason =
+      typeof req.body?.reason === "string" ? req.body.reason.slice(0, 300) : "";
     if (!userId) {
-      return res.status(400).json({ success: false, message: "userId is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "userId is required" });
     }
     if (userId === req.user.id) {
-      return res.status(400).json({ success: false, message: "საკუთარ თავს ვერ დაბლოკავ" });
+      return res
+        .status(400)
+        .json({ success: false, message: "საკუთარ თავს ვერ დაბლოკავ" });
     }
 
     await client.query("BEGIN");
@@ -379,8 +599,13 @@ export const banUserByAdmin = async (req, res) => {
       });
     }
     // ძველი სესიები უქმდება
-    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [userId]);
-    await client.query("UPDATE reports SET status = 'resolved' WHERE reported_id = $1", [userId]);
+    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
+      userId,
+    ]);
+    await client.query(
+      "UPDATE reports SET status = 'resolved' WHERE reported_id = $1",
+      [userId],
+    );
 
     // 2. მომხმარებლის მოწყობილობის მონაცემების წამოღება
     const deviceRes = await client.query(
@@ -400,11 +625,19 @@ export const banUserByAdmin = async (req, res) => {
            SET push_token = EXCLUDED.push_token,
                ip_address = EXCLUDED.ip_address,
                reason = EXCLUDED.reason`,
-          [device_uuid || null, push_token || null, registration_ip || null, reason || `Banned user ID: ${userId}`],
+          [
+            device_uuid || null,
+            push_token || null,
+            registration_ip || null,
+            reason || `Banned user ID: ${userId}`,
+          ],
         );
       }
     }
-    await client.query("UPDATE user_devices SET push_token = NULL WHERE user_id = $1", [userId]);
+    await client.query(
+      "UPDATE user_devices SET push_token = NULL WHERE user_id = $1",
+      [userId],
+    );
 
     await client.query("COMMIT");
 
@@ -459,7 +692,9 @@ export const sendPushNotification = async (req, res) => {
     const { title, body, userIds, sendToAll } = req.body;
 
     if (!title || !body) {
-      return res.status(400).json({ success: false, message: "title and body are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "title and body are required" });
     }
 
     const hasTargets = Array.isArray(userIds) && userIds.length > 0;
@@ -494,7 +729,11 @@ export const sendPushNotification = async (req, res) => {
 
     // Expo აქცეპტებს მაქსიმუმ 100 შეტყობინებას ერთ მოთხოვნაში
     for (let i = 0; i < tokens.length; i += 100) {
-      await sendExpoNotifications(tokens.slice(i, i + 100), String(title).slice(0, 100), String(body).slice(0, 300));
+      await sendExpoNotifications(
+        tokens.slice(i, i + 100),
+        String(title).slice(0, 100),
+        String(body).slice(0, 300),
+      );
     }
 
     res.status(200).json({

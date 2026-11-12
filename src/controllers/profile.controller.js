@@ -1,9 +1,27 @@
 import { pool } from "../db/index.js";
-import { emitToUser } from "../socket.js";
-import { notifyAdmins, notifyUser } from "../services/notification.service.js";
-import { createPhotoUploadTarget, isOwnPhotoUrl, moveUserPhotosToDeleted } from "../services/storage.service.js";
+import { emitToAdmins, emitToUser } from "../socket.js";
+import { notifyAdmins, notifyUserT } from "../services/notification.service.js";
+import { MATCH_TTL_HOURS } from "../services/matchConfig.js";
+import {
+  createPhotoUploadTarget,
+  isOwnPhotoUrl,
+  moveUserPhotosToDeleted,
+} from "../services/storage.service.js";
 
 const MAX_PHOTOS = 6;
+// ველები, რომლებიც pending_changes-ში {old,new} სახით ინახება
+const DRAFT_FIELDS = [
+  "full_name",
+  "age",
+  "birth_date",
+  "bio",
+  "city",
+  "gender",
+  "looking_for",
+  "search_radius",
+  "min_age",
+  "max_age",
+];
 const MAX_MESSAGE_LENGTH = 2000;
 const REPORT_REASON_MAX = 100;
 const REPORT_DETAILS_MAX = 1000;
@@ -97,21 +115,32 @@ const sanitizeProfileInput = (body, userId, knownPhotoUrls = new Set()) => {
     }
     fields.max_age = maxAge;
   }
-  if (fields.min_age !== undefined && fields.max_age !== undefined && fields.min_age > fields.max_age) {
+  if (
+    fields.min_age !== undefined &&
+    fields.max_age !== undefined &&
+    fields.min_age > fields.max_age
+  ) {
     return { error: "მინიმალური ასაკი მაქსიმალურზე დიდია" };
   }
 
   let photos;
   if (body.photos !== undefined) {
-    if (!Array.isArray(body.photos)) return { error: "ფოტოების ფორმატი არასწორია" };
+    if (!Array.isArray(body.photos))
+      return { error: "ფოტოების ფორმატი არასწორია" };
     if (body.photos.length > MAX_PHOTOS) {
       return { error: `მაქსიმუმ ${MAX_PHOTOS} ფოტოა დაშვებული` };
     }
     photos = [];
     for (let i = 0; i < body.photos.length; i++) {
       const p = body.photos[i];
-      if (!p || !(isOwnPhotoUrl(p.image_url, userId) || knownPhotoUrls.has(p.image_url))) {
-        console.warn("PHOTO URL REJECTED:", { userId, url: String(p?.image_url).slice(0, 300) });
+      if (
+        !p ||
+        !(isOwnPhotoUrl(p.image_url, userId) || knownPhotoUrls.has(p.image_url))
+      ) {
+        console.warn("PHOTO URL REJECTED:", {
+          userId,
+          url: String(p?.image_url).slice(0, 300),
+        });
         return { error: "ფოტოს მისამართი არასწორია" };
       }
       photos.push({ image_url: p.image_url, position: i, is_main: i === 0 });
@@ -121,14 +150,20 @@ const sanitizeProfileInput = (body, userId, knownPhotoUrls = new Set()) => {
   return { fields, photos };
 };
 
-const PHOTO_TYPES = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+const PHOTO_TYPES = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
 
 // ფოტოს ატვირთვის ბილეთი: აპი ამით ტვირთავს პირდაპირ Supabase Storage-ზე (anon key-ის გარეშე)
 export const createPhotoUploadUrl = async (req, res) => {
   try {
     const ext = PHOTO_TYPES[req.body?.contentType];
     if (!ext) {
-      return res.status(400).json({ message: "ფოტოს ფორმატი არასწორია (JPEG, PNG ან WebP)" });
+      return res
+        .status(400)
+        .json({ message: "ფოტოს ფორმატი არასწორია (JPEG, PNG ან WebP)" });
     }
     const index = Number(req.body?.index);
     if (!Number.isInteger(index) || index < 0 || index >= MAX_PHOTOS) {
@@ -161,7 +196,10 @@ export const updateLocation = async (req, res) => {
       return res.status(400).json({ error: "კოორდინატები არასწორია" });
     }
 
-    await pool.query("UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3", [latitude, longitude, userId]);
+    await pool.query(
+      "UPDATE users SET latitude = $1, longitude = $2 WHERE id = $3",
+      [latitude, longitude, userId],
+    );
     res.json({ success: true });
   } catch (err) {
     console.error("UPDATE LOCATION ERROR:", err);
@@ -192,7 +230,10 @@ const loadKnownPhotoUrls = async (userId) => {
 };
 
 export const updateProfile = async (req, res) => {
-  const known = req.body?.photos !== undefined ? await loadKnownPhotoUrls(req.user.id) : new Set();
+  const known =
+    req.body?.photos !== undefined
+      ? await loadKnownPhotoUrls(req.user.id)
+      : new Set();
   const parsed = sanitizeProfileInput(req.body || {}, req.user.id, known);
   if (parsed.error) {
     return res.status(400).json({ success: false, message: parsed.error });
@@ -223,21 +264,26 @@ export const updateProfile = async (req, res) => {
       }
 
       if (photos) {
-        const oldRes = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
+        const oldRes = await client.query(
+          "SELECT image_url FROM photos WHERE user_id = $1",
+          [userId],
+        );
         const keep = new Set(photos.map((p) => p.image_url));
-        removedUrls = oldRes.rows.map((r) => r.image_url).filter((u) => !keep.has(u));
+        removedUrls = oldRes.rows
+          .map((r) => r.image_url)
+          .filter((u) => !keep.has(u));
         await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
         for (const p of photos) {
-          await client.query("INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)", [
-            userId,
-            p.image_url,
-            p.position,
-            p.is_main,
-          ]);
+          await client.query(
+            "INSERT INTO photos (user_id, image_url, position, is_main) VALUES ($1, $2, $3, $4)",
+            [userId, p.image_url, p.position, p.is_main],
+          );
         }
       }
 
-      const me = await client.query("SELECT * FROM users WHERE id = $1", [userId]);
+      const me = await client.query("SELECT * FROM users WHERE id = $1", [
+        userId,
+      ]);
       await client.query("COMMIT");
       await moveUserPhotosToDeleted(userId, removedUrls);
       const { password_hash, ...safe } = me.rows[0];
@@ -245,7 +291,7 @@ export const updateProfile = async (req, res) => {
     }
 
     const currentUserRes = await client.query(
-      "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age, pending_changes FROM users WHERE id = $1 FOR UPDATE",
+      "SELECT full_name, age, birth_date, bio, city, gender, looking_for, search_radius, min_age, max_age, pending_changes, status FROM users WHERE id = $1 FOR UPDATE",
       [userId],
     );
     const currentUser = currentUserRes.rows[0] || {};
@@ -277,13 +323,28 @@ export const updateProfile = async (req, res) => {
       }
     }
 
-    const pendingJson = Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+    const pendingJson =
+      Object.keys(changes).length > 0 ? JSON.stringify(changes) : null;
+
+    // დამტკიცებული მომხმარებელი ცვლილების გარეშე "შენახვას" აჭერს: სტატუსს არ ვეხებით,
+    // რომ ტყუილად არ დაიმალოს პროფილი და ადმინთან არ გაჩნდეს ცარიელი განაცხადი.
+    if (!pendingJson && currentUser.status === "approved") {
+      const same = await client.query(
+        `SELECT id, username, email, full_name, bio, gender, looking_for, city, age, birth_date, search_radius, min_age, max_age, status, is_admin
+         FROM users WHERE id = $1`,
+        [userId],
+      );
+      await client.query("COMMIT");
+      return res.status(200).json({ success: true, data: same.rows[0] });
+    }
 
     const userResult = await client.query(
       `UPDATE users
        SET status = 'pending',
            pending_changes = $1,
-           rejection_reasons = '{}'::jsonb
+           rejection_reasons = '{}'::jsonb,
+           review_locked_by = NULL,
+           review_locked_at = NULL
        WHERE id = $2
        RETURNING id, username, email, full_name, bio, gender, looking_for, city, age, birth_date, search_radius, min_age, max_age, status, is_admin`,
       [pendingJson, userId],
@@ -291,7 +352,9 @@ export const updateProfile = async (req, res) => {
     await client.query("COMMIT");
 
     // წინა (ჯერ დაუდასტურებელი) განაცხადის ფოტოები, რომლებიც აღარ გვჭირდება
-    const prevPendingUrls = (currentUser.pending_changes?.photos?.new || []).map((p) => p?.image_url);
+    const prevPendingUrls = (
+      currentUser.pending_changes?.photos?.new || []
+    ).map((p) => p?.image_url);
     const stillNeeded = new Set([
       ...currentPhotos.map((p) => p.image_url),
       ...(changes.photos?.new || []).map((p) => p.image_url),
@@ -300,6 +363,12 @@ export const updateProfile = async (req, res) => {
       userId,
       prevPendingUrls.filter((u) => u && !stillNeeded.has(u)),
     );
+
+    emitToAdmins("review_lock_changed", {
+      userId,
+      lockedBy: null,
+      changed: true,
+    });
 
     notifyAdmins(
       "ახალი განაცხადი 📝",
@@ -311,7 +380,9 @@ export const updateProfile = async (req, res) => {
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Update Profile Error:", error);
-    res.status(500).json({ success: false, message: "პროფილის განახლება ვერ მოხერხდა" });
+    res
+      .status(500)
+      .json({ success: false, message: "პროფილის განახლება ვერ მოხერხდა" });
   } finally {
     client.release();
   }
@@ -332,10 +403,45 @@ export const getMe = async (req, res) => {
     );
 
     const user = userResult.rows[0];
-    const photos = photosResult.rows;
+    let photos = photosResult.rows;
 
     if (!user) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
+    }
+
+    // უარყოფილი განაცხადის "დრაფტი": მომხმარებელი settings-ში ხედავს იმას, რაც თვითონ გამოგზავნა
+    // (წითელი ჩარჩოებით), ამიტომ მხოლოდ ხარვეზიანი ნაწილის შეცვლა სჭირდება.
+    let isDraft = false;
+    if (user.status === "rejected") {
+      const draftRes = await pool.query(
+        "SELECT pending_changes FROM users WHERE id = $1",
+        [userId],
+      );
+      let changes = draftRes.rows[0]?.pending_changes;
+      if (typeof changes === "string") {
+        try {
+          changes = JSON.parse(changes);
+        } catch {
+          changes = null;
+        }
+      }
+      if (changes && typeof changes === "object") {
+        for (const f of DRAFT_FIELDS) {
+          if (changes[f] && changes[f].new !== undefined)
+            user[f] = changes[f].new;
+        }
+        const draftPhotos = changes.photos?.new;
+        if (Array.isArray(draftPhotos) && draftPhotos.length > 0) {
+          photos = draftPhotos
+            .filter((p) => p?.image_url)
+            .map((p, i) => ({
+              image_url: p.image_url,
+              position: p.position ?? i,
+              is_main: (p.position ?? i) === 0,
+            }));
+        }
+        isDraft = true;
+      }
     }
 
     const validation = {
@@ -352,6 +458,7 @@ export const getMe = async (req, res) => {
     res.json({
       ...user,
       photos,
+      is_draft: isDraft,
       is_complete: isComplete,
       profile_status: validation,
     });
@@ -374,7 +481,8 @@ export const getDiscovery = async (req, res) => {
     );
     const me = meResult.rows[0];
 
-    if (!me || me.latitude === null || me.longitude === null) return res.json([]);
+    if (!me || me.latitude === null || me.longitude === null)
+      return res.json([]);
 
     const radius = Number(me.search_radius) || 50;
     const minAge = me.min_age ?? 18;
@@ -415,7 +523,17 @@ export const getDiscovery = async (req, res) => {
       GROUP BY f.id, f.full_name, f.age, f.city, f.bio, f.interests, f.distance
       ORDER BY f.distance ASC, f.id ASC
       LIMIT $8 OFFSET $9`,
-      [userId, me.latitude, me.longitude, radius, minAge, maxAge, lookingFor, limit, offset],
+      [
+        userId,
+        me.latitude,
+        me.longitude,
+        radius,
+        minAge,
+        maxAge,
+        lookingFor,
+        limit,
+        offset,
+      ],
     );
     res.json(discoveryResult.rows);
   } catch (err) {
@@ -428,7 +546,9 @@ export const getMatches = async (req, res) => {
   try {
     const userId = req.user.id;
     const matchesResult = await pool.query(
-      `SELECT u.id, u.full_name, p.image_url AS main_photo,
+      `SELECT u.id, u.full_name, p.image_url AS main_photo, m.matched_at,
+              CASE WHEN msg.created_at IS NULL
+                   THEN m.matched_at + make_interval(hours => $2::int) END AS expires_at,
               msg.text AS last_message_text, msg.created_at AS last_message_at,
               COALESCE(unread.count, 0)::int AS unread_count
        FROM matches m
@@ -447,10 +567,11 @@ export const getMatches = async (req, res) => {
          WHERE receiver_id = $1 AND is_read = FALSE GROUP BY sender_id
        ) unread ON unread.sender_id = u.id
        WHERE (m.user1_id = $1 OR m.user2_id = $1)
+         AND m.expired_at IS NULL
          AND COALESCE(u.is_banned, false) = false
          AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))
        ORDER BY last_message_at DESC NULLS LAST, m.matched_at DESC`,
-      [userId],
+      [userId, MATCH_TTL_HOURS],
     );
     res.json(matchesResult.rows);
   } catch (err) {
@@ -462,7 +583,8 @@ export const getMatches = async (req, res) => {
 export const getChatMessages = async (req, res) => {
   try {
     const partnerId = toId(req.params.partnerId);
-    if (!partnerId) return res.status(400).json({ error: "არასწორი მომხმარებელი" });
+    if (!partnerId)
+      return res.status(400).json({ error: "არასწორი მომხმარებელი" });
 
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 200, 1), 500);
     const messages = await pool.query(
@@ -484,7 +606,8 @@ export const sendMessage = async (req, res) => {
   try {
     const senderId = req.user.id;
     const receiverId = toId(req.body?.receiverId);
-    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+    const content =
+      typeof req.body?.content === "string" ? req.body.content.trim() : "";
 
     if (!receiverId || receiverId === senderId) {
       return res.status(400).json({ error: "არასწორი მიმღები" });
@@ -501,6 +624,7 @@ export const sendMessage = async (req, res) => {
       `SELECT m.id FROM matches m
        JOIN users r ON r.id = $2 AND COALESCE(r.is_banned,false) = false
        WHERE ((m.user1_id = $1 AND m.user2_id = $2) OR (m.user1_id = $2 AND m.user2_id = $1))
+         AND m.expired_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM blocks b
            WHERE (b.blocker_id = $1 AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = $1)
@@ -524,15 +648,25 @@ export const sendMessage = async (req, res) => {
     emitToUser(receiverId, "new_message", message);
     emitToUser(senderId, "new_message", message);
 
-    const senderRes = await pool.query("SELECT full_name, username FROM users WHERE id = $1", [senderId]);
-    const senderName = senderRes.rows[0]?.full_name || senderRes.rows[0]?.username || "მომხმარებელმა";
+    const senderRes = await pool.query(
+      "SELECT full_name, username FROM users WHERE id = $1",
+      [senderId],
+    );
+    const senderName =
+      senderRes.rows[0]?.full_name || senderRes.rows[0]?.username || "NiceWest";
 
-    const formattedContent = content.length > 50 ? `${content.substring(0, 50)}...` : content;
+    const formattedContent =
+      content.length > 50 ? `${content.substring(0, 50)}...` : content;
 
-    notifyUser(receiverId, `ახალი შეტყობინება: ${senderName}`, formattedContent, {
-      type: "chat_message",
-      senderId,
-    });
+    notifyUserT(
+      receiverId,
+      "chat_message",
+      { name: senderName, text: formattedContent },
+      {
+        type: "chat_message",
+        senderId,
+      },
+    );
 
     res.json(message);
   } catch (err) {
@@ -544,7 +678,8 @@ export const sendMessage = async (req, res) => {
 export const markAsRead = async (req, res) => {
   try {
     const partnerId = toId(req.params.partnerId);
-    if (!partnerId) return res.status(400).json({ error: "არასწორი მომხმარებელი" });
+    if (!partnerId)
+      return res.status(400).json({ error: "არასწორი მომხმარებელი" });
 
     await pool.query(
       "UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE",
@@ -610,7 +745,9 @@ export const getUserProfile = async (req, res) => {
     });
   } catch (err) {
     console.error("GET_USER_PROFILE ERROR:", err);
-    res.status(500).json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
+    res
+      .status(500)
+      .json({ error: "შეცდომა მომხმარებლის პროფილის წამოღებისას" });
   }
 };
 
@@ -622,13 +759,19 @@ export const reportUser = async (req, res) => {
     const details = cleanText(req.body?.details, REPORT_DETAILS_MAX) || "";
 
     if (!reportedId || !reason) {
-      return res.status(400).json({ error: "reportedUserId და reason აუცილებელია" });
+      return res
+        .status(400)
+        .json({ error: "reportedUserId და reason აუცილებელია" });
     }
     if (reportedId === reporterId) {
-      return res.status(400).json({ error: "საკუთარ თავზე რეპორტს ვერ გააგზავნით" });
+      return res
+        .status(400)
+        .json({ error: "საკუთარ თავზე რეპორტს ვერ გააგზავნით" });
     }
 
-    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [reportedId]);
+    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [
+      reportedId,
+    ]);
     if (exists.rows.length === 0) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
@@ -641,12 +784,10 @@ export const reportUser = async (req, res) => {
       [reporterId, reportedId],
     );
     if (dup.rows.length === 0) {
-      await pool.query("INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)", [
-        reporterId,
-        reportedId,
-        reason,
-        details,
-      ]);
+      await pool.query(
+        "INSERT INTO reports (reporter_id, reported_id, reason, details) VALUES ($1, $2, $3, $4)",
+        [reporterId, reportedId, reason, details],
+      );
     }
 
     res.json({ success: true, message: "რეპორტი წარმატებით გაიგზავნა" });
@@ -668,7 +809,9 @@ export const blockUser = async (req, res) => {
       return res.status(400).json({ error: "საკუთარ თავს ვერ დაბლოკავთ" });
     }
 
-    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [blockedId]);
+    const exists = await pool.query("SELECT 1 FROM users WHERE id = $1", [
+      blockedId,
+    ]);
     if (exists.rows.length === 0) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
     }
@@ -689,5 +832,27 @@ export const blockUser = async (req, res) => {
   } catch (err) {
     console.error("BLOCK USER ERROR:", err);
     res.status(500).json({ error: "მომხმარებლის დაბლოკვა ვერ მოხერხდა" });
+  }
+};
+
+// აპი აცნობებს სერვერს არჩეულ ენას, რომ push შეტყობინებები ამავე ენაზე გაიგზავნოს
+export const setLanguage = async (req, res) => {
+  try {
+    const raw = String(req.body?.language || "").toLowerCase();
+    const language = raw.startsWith("en")
+      ? "en"
+      : raw.startsWith("ka")
+        ? "ka"
+        : null;
+    if (!language) return res.status(400).json({ error: "ენა არასწორია" });
+
+    await pool.query("UPDATE users SET language = $1 WHERE id = $2", [
+      language,
+      req.user.id,
+    ]);
+    res.json({ success: true, language });
+  } catch (err) {
+    console.error("SET LANGUAGE ERROR:", err);
+    res.status(500).json({ error: "ენის შენახვა ვერ მოხერხდა" });
   }
 };

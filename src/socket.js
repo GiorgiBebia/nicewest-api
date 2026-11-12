@@ -9,3 +9,9 @@ export const emitToUser = (userId, event, payload) => {
   if (!ioInstance) return;
   ioInstance.to(String(userId)).emit(event, payload);
 };
+
+// ყველა ადმინისტრატორი ერთ ოთახშია ("admins"): server.js-ში ავტორიზაციისას უერთდებიან
+export const emitToAdmins = (event, payload) => {
+  if (!ioInstance) return;
+  ioInstance.to("admins").emit(event, payload);
+};

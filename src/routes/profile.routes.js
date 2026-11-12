@@ -12,9 +12,13 @@ import {
   reportUser,
   blockUser,
   createPhotoUploadUrl,
+  setLanguage,
 } from "../controllers/profile.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
-import { messageLimiter, uploadLimiter } from "../middleware/rateLimit.middleware.js";
+import {
+  messageLimiter,
+  uploadLimiter,
+} from "../middleware/rateLimit.middleware.js";
 
 const router = express.Router();
 
@@ -22,6 +26,7 @@ router.get("/me", authMiddleware, getMe);
 router.post("/update", authMiddleware, updateProfile);
 router.post("/upload-url", authMiddleware, uploadLimiter, createPhotoUploadUrl);
 router.post("/location", authMiddleware, updateLocation);
+router.put("/language", authMiddleware, setLanguage);
 router.get("/discovery", authMiddleware, getDiscovery);
 router.get("/matches", authMiddleware, getMatches);
 router.get("/messages/:partnerId", authMiddleware, getChatMessages);

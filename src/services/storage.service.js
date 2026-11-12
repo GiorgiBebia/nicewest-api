@@ -11,7 +11,9 @@ const getClient = () => {
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !key) {
-      throw new Error("SUPABASE_URL ან SUPABASE_SERVICE_ROLE_KEY არ არის დაყენებული");
+      throw new Error(
+        "SUPABASE_URL ან SUPABASE_SERVICE_ROLE_KEY არ არის დაყენებული",
+      );
     }
     client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -57,14 +59,43 @@ const pathFromPhotoUrl = (url, userId) => {
 // ფაილს არ ვშლით, მხოლოდ ვცვლით მისამართს. შეცდომა არასდროს აგდებს მოთხოვნას (best-effort).
 export const moveUserPhotosToDeleted = async (userId, urls) => {
   try {
-    const paths = [...new Set((urls || []).map((u) => pathFromPhotoUrl(u, userId)).filter(Boolean))];
+    const paths = [
+      ...new Set(
+        (urls || []).map((u) => pathFromPhotoUrl(u, userId)).filter(Boolean),
+      ),
+    ];
     if (paths.length === 0) return;
     const bucket = getClient().storage.from(PHOTO_BUCKET);
     for (const path of paths) {
       const { error } = await bucket.move(path, `${DELETED_FOLDER}/${path}`);
-      if (error) console.error("MOVE PHOTO TO DELETED ERROR:", path, error.message);
+      if (error)
+        console.error("MOVE PHOTO TO DELETED ERROR:", path, error.message);
     }
   } catch (err) {
     console.error("MOVE PHOTOS TO DELETED ERROR:", err);
+  }
+};
+
+// უარყოფილი ფოტოების არქივი: ფაილს ვაკოპირებთ deleted/{userId}/rejected/{ფაილი}-ში,
+// ორიგინალი კი თავის ადგილას რჩება, რომ მომხმარებელმა settings-ში თავისი "დრაფტი" დაინახოს.
+// (როცა ფოტოს შეცვლის, updateProfile ორიგინალს ჩვეულებრივ deleted/-ში გადაიტანს.) best-effort.
+export const archiveRejectedPhotos = async (userId, urls) => {
+  try {
+    const paths = [
+      ...new Set(
+        (urls || []).map((u) => pathFromPhotoUrl(u, userId)).filter(Boolean),
+      ),
+    ];
+    if (paths.length === 0) return;
+    const bucket = getClient().storage.from(PHOTO_BUCKET);
+    for (const path of paths) {
+      const file = path.split("/").pop();
+      const target = `${DELETED_FOLDER}/${userId}/rejected/${Date.now()}_${file}`;
+      const { error } = await bucket.copy(path, target);
+      if (error)
+        console.error("ARCHIVE REJECTED PHOTO ERROR:", path, error.message);
+    }
+  } catch (err) {
+    console.error("ARCHIVE REJECTED PHOTOS ERROR:", err);
   }
 };

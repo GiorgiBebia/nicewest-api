@@ -1,5 +1,5 @@
 import { pool } from "../db/index.js";
-import { notifyUser } from "../services/notification.service.js";
+import { notifyUserT } from "../services/notification.service.js";
 
 const DAILY_LIKES = 30; // ერთ ციკლში მისაცემი ლაიქები
 const RESET_HOURS = 12; // ციკლის ხანგრძლივობა
@@ -80,11 +80,10 @@ export const likeUser = async (req, res) => {
       notifyReset = likes_left < DAILY_LIKES && likes_left <= 0;
       likes_left = Math.max(likes_left, DAILY_LIKES);
       lastReset = now;
-      await client.query("UPDATE users SET likes_left = $1, last_like_reset = $2 WHERE id = $3", [
-        likes_left,
-        now,
-        from,
-      ]);
+      await client.query(
+        "UPDATE users SET likes_left = $1, last_like_reset = $2 WHERE id = $3",
+        [likes_left, now, from],
+      );
     }
 
     // 4. ლაიქის ჩაწერა. თუ უკვე არსებობს, ლაიქი არ იკლება და არაფერი მეორდება
@@ -122,7 +121,10 @@ export const likeUser = async (req, res) => {
     const updatedLikesLeft = dec.rows[0].likes_left;
 
     // 7. ორმხრივი ლაიქი: match იქმნება მხოლოდ ერთხელ (უნიკალური წყვილი)
-    const reverse = await client.query("SELECT 1 FROM likes WHERE from_user_id = $1 AND to_user_id = $2", [to, from]);
+    const reverse = await client.query(
+      "SELECT 1 FROM likes WHERE from_user_id = $1 AND to_user_id = $2",
+      [to, from],
+    );
 
     let isMatch = false;
     if (reverse.rows.length > 0) {
@@ -141,20 +143,27 @@ export const likeUser = async (req, res) => {
 
     // შეტყობინებები კომიტის შემდეგ, ფონურად
     if (notifyReset) {
-      notifyUser(from, "მოწონებები განახლდა! 🎉", "შენი 30 დღიური მოწონება კვლავ აქტიურია. დაბრუნდი აპლიკაციაში!", {
-        type: "likes_reset",
-      });
+      notifyUserT(
+        from,
+        "likes_reset",
+        { count: DAILY_LIKES },
+        { type: "likes_reset" },
+      );
     }
 
     if (newMatch) {
-      notifyUser(to, "ახალი Match! 🎉", `შენ და ${senderName || "მომხმარებელმა"} მოეწონეთ ერთმანეთი!`, {
-        type: "match",
-        targetUserId: from,
-      });
-      notifyUser(from, "ახალი Match! 🎉", `შენ და ${targetName || "მომხმარებელმა"} მოეწონეთ ერთმანეთი!`, {
-        type: "match",
-        targetUserId: to,
-      });
+      notifyUserT(
+        to,
+        "match",
+        { name: senderName || "" },
+        { type: "match", targetUserId: from },
+      );
+      notifyUserT(
+        from,
+        "match",
+        { name: targetName || "" },
+        { type: "match", targetUserId: to },
+      );
     }
 
     return res.json({ match: isMatch, likes_left: updatedLikesLeft });
@@ -196,7 +205,10 @@ export const dislikeUser = async (req, res) => {
 export const getLikesStatus = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRes = await pool.query("SELECT likes_left, last_like_reset FROM users WHERE id = $1", [userId]);
+    const userRes = await pool.query(
+      "SELECT likes_left, last_like_reset FROM users WHERE id = $1",
+      [userId],
+    );
 
     if (userRes.rows.length === 0) {
       return res.status(404).json({ error: "მომხმარებელი ვერ მოიძებნა" });
@@ -211,16 +223,18 @@ export const getLikesStatus = async (req, res) => {
       const wasEmpty = likes_left <= 0;
       likes_left = Math.max(likes_left, DAILY_LIKES);
       last_like_reset = now;
-      await pool.query("UPDATE users SET likes_left = $1, last_like_reset = $2 WHERE id = $3", [
-        likes_left,
-        now,
-        userId,
-      ]);
+      await pool.query(
+        "UPDATE users SET likes_left = $1, last_like_reset = $2 WHERE id = $3",
+        [likes_left, now, userId],
+      );
 
       if (wasEmpty) {
-        notifyUser(userId, "მოწონებები განახლდა! 🎉", "შენი 30 დღიური მოწონება კვლავ აქტიურია. დაბრუნდი აპლიკაციაში!", {
-          type: "likes_reset",
-        });
+        notifyUserT(
+          userId,
+          "likes_reset",
+          { count: DAILY_LIKES },
+          { type: "likes_reset" },
+        );
       }
     }
 
@@ -303,12 +317,22 @@ export const addRewardLikes = async (req, res) => {
       });
     }
 
-    if (last && Date.now() - new Date(last).getTime() < REWARD_MIN_GAP_SECONDS * 1000) {
+    if (
+      last &&
+      Date.now() - new Date(last).getTime() < REWARD_MIN_GAP_SECONDS * 1000
+    ) {
       await client.query("ROLLBACK");
-      return res.status(429).json({ error: "ძალიან სწრაფად ითხოვთ ბონუსს", code: "REWARD_TOO_FAST" });
+      return res
+        .status(429)
+        .json({
+          error: "ძალიან სწრაფად ითხოვთ ბონუსს",
+          code: "REWARD_TOO_FAST",
+        });
     }
 
-    await client.query("INSERT INTO reward_claims (user_id) VALUES ($1)", [userId]);
+    await client.query("INSERT INTO reward_claims (user_id) VALUES ($1)", [
+      userId,
+    ]);
 
     const updateRes = await client.query(
       "UPDATE users SET likes_left = likes_left + $1 WHERE id = $2 RETURNING likes_left",
