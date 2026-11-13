@@ -10,11 +10,14 @@ dotenv.config();
 const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
 const SEND_TIMEOUT_MS = 10000;
 
-export const isEmailConfigured = () => Boolean(process.env.BREVO_API_KEY && process.env.MAIL_FROM);
+export const isEmailConfigured = () =>
+  Boolean(process.env.BREVO_API_KEY && process.env.MAIL_FROM);
 
 export const sendEmail = async ({ to, subject, html, text }) => {
   if (!isEmailConfigured()) {
-    throw new Error("EMAIL_NOT_CONFIGURED: BREVO_API_KEY ან MAIL_FROM არ არის განსაზღვრული");
+    throw new Error(
+      "EMAIL_NOT_CONFIGURED: BREVO_API_KEY ან MAIL_FROM არ არის განსაზღვრული",
+    );
   }
 
   const res = await fetch(BREVO_URL, {
@@ -25,7 +28,10 @@ export const sendEmail = async ({ to, subject, html, text }) => {
       accept: "application/json",
     },
     body: JSON.stringify({
-      sender: { name: process.env.MAIL_FROM_NAME || "NiceWest", email: process.env.MAIL_FROM },
+      sender: {
+        name: process.env.MAIL_FROM_NAME || "NiceWest",
+        email: process.env.MAIL_FROM,
+      },
       to: [{ email: to }],
       subject,
       htmlContent: html,

@@ -15,6 +15,7 @@ import likeRoutes from "./routes/like.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import { initLikeResetCron } from "./services/likeReset.cron.js";
 import { initMatchCron } from "./services/matchExpiry.cron.js";
+import { initRetentionCron } from "./services/retention.cron.js";
 import { globalLimiter } from "./middleware/rateLimit.middleware.js";
 
 if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET) {
@@ -104,6 +105,7 @@ setIo(io);
 
 initLikeResetCron();
 initMatchCron();
+initRetentionCron();
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

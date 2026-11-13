@@ -1,4 +1,5 @@
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
@@ -22,14 +23,17 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 // ორივე საიდუმლო სავალდებულოა. ნაგულისხმევი მნიშვნელობა აღარ არსებობს,
 // რადგან კოდი GitHub-ზეა და ნაგულისხმევი საიდუმლო ყველასთვის ცნობილი იქნებოდა.
 if (!JWT_SECRET || !JWT_REFRESH_SECRET) {
-  console.error("კრიტიკული შეცდომა: JWT_SECRET და JWT_REFRESH_SECRET უნდა იყოს განსაზღვრული!");
+  console.error(
+    "კრიტიკული შეცდომა: JWT_SECRET და JWT_REFRESH_SECRET უნდა იყოს განსაზღვრული!",
+  );
   process.exit(1);
 }
 
 // Google Web Client ID საჯაროა (აპშიც წერია). Render-ში შეგიძლია
 // GOOGLE_WEB_CLIENT_ID-ით გადაწერო (რამდენიმე მნიშვნელობა მძიმით).
 const GOOGLE_CLIENT_IDS = (
-  process.env.GOOGLE_WEB_CLIENT_ID || "390950464634-5l06iafa3t1vb1s00eao74ir5juogbgc.apps.googleusercontent.com"
+  process.env.GOOGLE_WEB_CLIENT_ID ||
+  "390950464634-5l06iafa3t1vb1s00eao74ir5juogbgc.apps.googleusercontent.com"
 )
   .split(",")
   .map((s) => s.trim())
@@ -71,7 +75,11 @@ const getClientIp = (req) => req.ip || req.socket.remoteAddress || "";
 
 // Helper: Token Generation
 const generateTokens = (user) => {
-  const accessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
+  const accessToken = jwt.sign(
+    { id: user.id, username: user.username },
+    JWT_SECRET,
+    { expiresIn: "15m" },
+  );
   const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, {
     expiresIn: `${REFRESH_DAYS}d`,
   });
@@ -79,21 +87,33 @@ const generateTokens = (user) => {
   return { accessToken, refreshToken };
 };
 
+// refresh token ბაზაში ინახება მხოლოდ SHA-256 ჰეშად: ბაზის გაჟონვის შემთხვევაშიც ტოკენებით ვერავინ შეძლებს შესვლას
+const hashToken = (token) =>
+  crypto.createHash("sha256").update(String(token)).digest("hex");
+
 // refresh token-ის შენახვა (რამდენიმე მოწყობილობა ერთდროულად დაიშვება)
 const storeRefreshToken = async (userId, refreshToken) => {
-  await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1 AND expires_at < NOW()", [userId]);
-  await pool.query("INSERT INTO user_refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)", [
-    userId,
-    refreshToken,
-    new Date(Date.now() + REFRESH_DAYS * 24 * 60 * 60 * 1000),
-  ]);
+  await pool.query(
+    "DELETE FROM user_refresh_tokens WHERE user_id = $1 AND expires_at < NOW()",
+    [userId],
+  );
+  await pool.query(
+    "INSERT INTO user_refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+    [
+      userId,
+      hashToken(refreshToken),
+      new Date(Date.now() + REFRESH_DAYS * 24 * 60 * 60 * 1000),
+    ],
+  );
 };
 
 const buildLoginResponse = async (user) => {
   const { accessToken, refreshToken } = generateTokens(user);
   await storeRefreshToken(user.id, refreshToken);
 
-  const isComplete = Boolean(user.gender && user.birth_date && user.city && user.looking_for);
+  const isComplete = Boolean(
+    user.gender && user.birth_date && user.city && user.looking_for,
+  );
 
   return {
     token: accessToken,
@@ -138,7 +158,9 @@ export const logAppOpen = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    await pool.query("INSERT INTO app_sessions (user_id) VALUES ($1)", [userId]);
+    await pool.query("INSERT INTO app_sessions (user_id) VALUES ($1)", [
+      userId,
+    ]);
 
     res.json({ success: true });
   } catch (err) {
@@ -201,7 +223,8 @@ const insertUser = async ({ username, email, hash, latitude, longitude }) => {
   return result.rows[0];
 };
 
-const normalizeEmail = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+const normalizeEmail = (v) =>
+  typeof v === "string" ? v.trim().toLowerCase() : "";
 const isSixDigits = (v) => typeof v === "string" && /^\d{6}$/.test(v.trim());
 
 // კოდის შექმნა და გაგზავნა. თუ გაგზავნა ვერ მოხერხდა, ახალ ჩანაწერს ვშლით,
@@ -226,7 +249,10 @@ const sendCode = async ({ email, purpose, payload, keepOnFail = false }) => {
       return {
         ok: false,
         status: 400,
-        body: { message: "რეგისტრაციის მონაცემები ვერ მოიძებნა. გთხოვთ თავიდან დაიწყოთ რეგისტრაცია." },
+        body: {
+          message:
+            "რეგისტრაციის მონაცემები ვერ მოიძებნა. გთხოვთ თავიდან დაიწყოთ რეგისტრაცია.",
+        },
       };
     }
     throw e;
@@ -257,13 +283,23 @@ const codeFailureResponse = (check) =>
         attemptsLeft: check.attemptsLeft,
       }
     : {
-        message: "კოდს ვადა გაუვიდა ან მცდელობები ამოიწურა. მოითხოვეთ ახალი კოდი.",
+        message:
+          "კოდს ვადა გაუვიდა ან მცდელობები ამოიწურა. მოითხოვეთ ახალი კოდი.",
         code: "CODE_EXPIRED",
       };
 
 export const register = async (req, res) => {
   try {
-    const { username, email, password, registrationToken, deviceUuid, pushToken, latitude, longitude } = req.body;
+    const {
+      username,
+      email,
+      password,
+      registrationToken,
+      deviceUuid,
+      pushToken,
+      latitude,
+      longitude,
+    } = req.body;
 
     const clientIp = getClientIp(req);
 
@@ -281,25 +317,31 @@ export const register = async (req, res) => {
         verifiedByGoogle = true;
       } catch (e) {
         return res.status(400).json({
-          message: "Google-ის დადასტურების ვადა გაუვიდა. გთხოვთ თავიდან სცადოთ Google-ით შესვლა.",
+          message:
+            "Google-ის დადასტურების ვადა გაუვიდა. გთხოვთ თავიდან სცადოთ Google-ით შესვლა.",
         });
       }
     } else {
       if (!email || typeof email !== "string") {
-        return res.status(400).json({ message: "ყველა აუცილებელი ველი შევსებული უნდა იყოს" });
+        return res
+          .status(400)
+          .json({ message: "ყველა აუცილებელი ველი შევსებული უნდა იყოს" });
       }
       emailTrim = email.trim().toLowerCase();
     }
 
     if (!username || typeof username !== "string") {
-      return res.status(400).json({ message: "ყველა აუცილებელი ველი შევსებული უნდა იყოს" });
+      return res
+        .status(400)
+        .json({ message: "ყველა აუცილებელი ველი შევსებული უნდა იყოს" });
     }
 
     const usernameTrim = username.trim();
 
     if (!usernameRegex.test(usernameTrim)) {
       return res.status(400).json({
-        message: "მომხმარებლის სახელი უნდა იყოს 3-30 სიმბოლო (ასოები, ციფრები, _ და .)",
+        message:
+          "მომხმარებლის სახელი უნდა იყოს 3-30 სიმბოლო (ასოები, ციფრები, _ და .)",
       });
     }
 
@@ -309,8 +351,14 @@ export const register = async (req, res) => {
 
     // პაროლი სავალდებულოა, თუ Google-ით არ ვრეგისტრირდებით
     if (!verifiedByGoogle || password) {
-      if (typeof password !== "string" || password.length < 8 || password.length > 72) {
-        return res.status(400).json({ message: "პაროლი უნდა იყოს 8-დან 72 სიმბოლომდე" });
+      if (
+        typeof password !== "string" ||
+        password.length < 8 ||
+        password.length > 72
+      ) {
+        return res
+          .status(400)
+          .json({ message: "პაროლი უნდა იყოს 8-დან 72 სიმბოლომდე" });
       }
     }
 
@@ -348,7 +396,9 @@ export const register = async (req, res) => {
       );
 
       if (blockedCheck.rows.length > 0) {
-        return res.status(403).json({ message: "ამ მოწყობილობიდან რეგისტრაცია შეზღუდულია." });
+        return res
+          .status(403)
+          .json({ message: "ამ მოწყობილობიდან რეგისტრაცია შეზღუდულია." });
       }
     }
 
@@ -365,7 +415,9 @@ export const register = async (req, res) => {
       );
 
       if (geoCheck.rows.length > 0) {
-        return res.status(403).json({ message: "რეგისტრაცია შეჩერებულია უსაფრთხოების მიზეზით." });
+        return res
+          .status(403)
+          .json({ message: "რეგისტრაცია შეჩერებულია უსაფრთხოების მიზეზით." });
       }
     }
 
@@ -378,7 +430,9 @@ export const register = async (req, res) => {
     if (existing.rows.length > 0) {
       const found = existing.rows[0];
       if (found.username.toLowerCase() === usernameTrim.toLowerCase()) {
-        return res.status(400).json({ message: "ეს მომხმარებლის სახელი უკვე დაკავებულია" });
+        return res
+          .status(400)
+          .json({ message: "ეს მომხმარებლის სახელი უკვე დაკავებულია" });
       }
       return res.status(400).json({ message: "ეს Email უკვე გამოყენებულია" });
     }
@@ -434,7 +488,9 @@ export const register = async (req, res) => {
     return res.json({ success: true, ...session });
   } catch (err) {
     if (err.code === "23505") {
-      return res.status(400).json({ message: "ეს მომხმარებელი ან Email უკვე გამოყენებულია" });
+      return res
+        .status(400)
+        .json({ message: "ეს მომხმარებელი ან Email უკვე გამოყენებულია" });
     }
     console.error("REGISTER ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა რეგისტრაციისას" });
@@ -445,7 +501,9 @@ export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || typeof username !== "string") {
-      return res.status(400).json({ message: "მომხმარებლის სახელი აუცილებელია" });
+      return res
+        .status(400)
+        .json({ message: "მომხმარებლის სახელი აუცილებელია" });
     }
     if (!password || typeof password !== "string") {
       return res.status(400).json({ message: "პაროლი აუცილებელია" });
@@ -460,7 +518,9 @@ export const login = async (req, res) => {
     );
 
     if (deletedCheck.rows.length > 0) {
-      return res.status(403).json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
+      return res
+        .status(403)
+        .json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
     }
 
     // 2. ძირითადი იუზერის ძებნა (username ან email)
@@ -479,13 +539,16 @@ export const login = async (req, res) => {
     const user = result.rows[0];
 
     if (user.is_banned) {
-      return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
+      return res
+        .status(403)
+        .json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
     }
 
     // Google-ით შექმნილ ანგარიშს, რომელსაც პაროლი არ აქვს, პაროლით ვერ შეხვალ
     if (!user.password_hash) {
       return res.status(400).json({
-        message: "ეს ანგარიში Google-ით შეიქმნა. გთხოვთ გამოიყენოთ „Google-ით შესვლა“.",
+        message:
+          "ეს ანგარიში Google-ით შეიქმნა. გთხოვთ გამოიყენოთ „Google-ით შესვლა“.",
       });
     }
 
@@ -513,16 +576,23 @@ export const socialLogin = async (req, res) => {
     // email-ს ვიღებთ მხოლოდ Google-ის მიერ ხელმოწერილი ტოკენიდან
     const google = await verifyGoogleIdToken(idToken);
     if (!google) {
-      return res.status(401).json({ message: "Google-ის ავტორიზაცია ვერ დადასტურდა" });
+      return res
+        .status(401)
+        .json({ message: "Google-ის ავტორიზაცია ვერ დადასტურდა" });
     }
 
     const emailTrim = google.email;
 
     // შემოწმება: ხომ არ არის წაშლილი ანგარიში?
-    const deletedCheck = await pool.query("SELECT id FROM deleted_users WHERE LOWER(email) = LOWER($1)", [emailTrim]);
+    const deletedCheck = await pool.query(
+      "SELECT id FROM deleted_users WHERE LOWER(email) = LOWER($1)",
+      [emailTrim],
+    );
 
     if (deletedCheck.rows.length > 0) {
-      return res.status(403).json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
+      return res
+        .status(403)
+        .json({ message: "ეს ანგარიში წაშლილია და წვდომა შეზღუდულია." });
     }
 
     const clientIp = getClientIp(req);
@@ -536,11 +606,16 @@ export const socialLogin = async (req, res) => {
       );
 
       if (blockedCheck.rows.length > 0) {
-        return res.status(403).json({ message: "ამ მოწყობილობიდან ავტორიზაცია შეზღუდულია." });
+        return res
+          .status(403)
+          .json({ message: "ამ მოწყობილობიდან ავტორიზაცია შეზღუდულია." });
       }
     }
 
-    const userResult = await pool.query("SELECT * FROM users WHERE LOWER(email) = LOWER($1)", [emailTrim]);
+    const userResult = await pool.query(
+      "SELECT * FROM users WHERE LOWER(email) = LOWER($1)",
+      [emailTrim],
+    );
 
     if (userResult.rows.length === 0) {
       // ახალი მომხმარებელი: ვაძლევთ 15-წუთიან ხელმოწერილ ტოკენს რეგისტრაციის დასასრულებლად
@@ -560,7 +635,9 @@ export const socialLogin = async (req, res) => {
 
     const user = userResult.rows[0];
     if (user.is_banned) {
-      return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
+      return res
+        .status(403)
+        .json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
     }
 
     await upsertDevice(user.id, req.body, clientIp);
@@ -572,36 +649,48 @@ export const socialLogin = async (req, res) => {
     res.json(await buildLoginResponse(user));
   } catch (err) {
     console.error("SOCIAL LOGIN ERROR:", err);
-    res.status(500).json({ message: "სერვერის შეცდომა სოციალური ავტორიზაციისას" });
+    res
+      .status(500)
+      .json({ message: "სერვერის შეცდომა სოციალური ავტორიზაციისას" });
   }
 };
 
 export const refresh = async (req, res) => {
   try {
     const { refreshToken } = req.body;
-    if (!refreshToken || typeof refreshToken !== "string") return res.status(401).json({ message: "No Refresh Token" });
+    if (!refreshToken || typeof refreshToken !== "string")
+      return res.status(401).json({ message: "No Refresh Token" });
 
     const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
 
     const dbTokenResult = await pool.query(
       "SELECT id FROM user_refresh_tokens WHERE token = $1 AND user_id = $2 AND expires_at > NOW()",
-      [refreshToken, decoded.id],
+      [hashToken(refreshToken), decoded.id],
     );
 
     if (dbTokenResult.rows.length === 0) {
       return res.status(403).json({ message: "Invalid Refresh Token" });
     }
 
-    const userResult = await pool.query("SELECT id, username, is_banned FROM users WHERE id = $1", [decoded.id]);
+    const userResult = await pool.query(
+      "SELECT id, username, is_banned FROM users WHERE id = $1",
+      [decoded.id],
+    );
     const user = userResult.rows[0];
 
     if (!user) return res.status(403).json({ message: "User not found" });
 
     if (user.is_banned) {
-      return res.status(403).json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
+      return res
+        .status(403)
+        .json({ message: "თქვენი ანგარიში დაბლოკილია", code: "BANNED" });
     }
 
-    const newAccessToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: "15m" });
+    const newAccessToken = jwt.sign(
+      { id: user.id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: "15m" },
+    );
 
     res.json({ accessToken: newAccessToken });
   } catch (e) {
@@ -622,10 +711,16 @@ export const logout = async (req, res) => {
       } catch (e) {
         userId = jwt.decode(refreshToken)?.id ?? null;
       }
-      const del = await pool.query("DELETE FROM user_refresh_tokens WHERE token = $1", [refreshToken]);
+      const del = await pool.query(
+        "DELETE FROM user_refresh_tokens WHERE token = $1",
+        [hashToken(refreshToken)],
+      );
       // push ტოკენს ვშლით მხოლოდ მაშინ, როცა ტოკენი რეალურად ჩვენი იყო
       if (userId && del.rowCount > 0) {
-        await pool.query("UPDATE user_devices SET push_token = NULL WHERE user_id = $1", [userId]);
+        await pool.query(
+          "UPDATE user_devices SET push_token = NULL WHERE user_id = $1",
+          [userId],
+        );
       }
     }
     res.json({ success: true });
@@ -703,7 +798,9 @@ export const syncDevice = async (req, res) => {
     });
   } catch (err) {
     console.error("SYNC DEVICE ERROR:", err);
-    res.status(500).json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
+    res
+      .status(500)
+      .json({ message: "სერვერის შეცდომა მოწყობილობის სინქრონიზაციისას" });
   }
 };
 
@@ -715,7 +812,9 @@ export const verifyRegistration = async (req, res) => {
     const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
 
     if (!emailRegex.test(email) || !isSixDigits(code)) {
-      return res.status(400).json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
+      return res
+        .status(400)
+        .json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
     }
 
     const check = await checkCode({ email, purpose: "register", code });
@@ -733,7 +832,8 @@ export const verifyRegistration = async (req, res) => {
     );
     if (existing.rows.length > 0) {
       return res.status(400).json({
-        message: "ეს მომხმარებლის სახელი ან Email უკვე გამოყენებულია. გთხოვთ თავიდან სცადოთ.",
+        message:
+          "ეს მომხმარებლის სახელი ან Email უკვე გამოყენებულია. გთხოვთ თავიდან სცადოთ.",
         code: "ALREADY_TAKEN",
       });
     }
@@ -775,7 +875,9 @@ export const verifyRegistration = async (req, res) => {
     });
   } catch (err) {
     console.error("VERIFY REGISTRATION ERROR:", err);
-    res.status(500).json({ message: "სერვერის შეცდომა რეგისტრაციის დადასტურებისას" });
+    res
+      .status(500)
+      .json({ message: "სერვერის შეცდომა რეგისტრაციის დადასტურებისას" });
   }
 };
 
@@ -788,10 +890,18 @@ export const resendRegistrationCode = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
-    const sent = await sendCode({ email, purpose: "register", keepOnFail: true });
+    const sent = await sendCode({
+      email,
+      purpose: "register",
+      keepOnFail: true,
+    });
     if (!sent.ok) return res.status(sent.status).json(sent.body);
 
-    res.json({ success: true, codeTtlMinutes: CODE_TTL_MIN, resendAfterSec: RESEND_COOLDOWN_SEC });
+    res.json({
+      success: true,
+      codeTtlMinutes: CODE_TTL_MIN,
+      resendAfterSec: RESEND_COOLDOWN_SEC,
+    });
   } catch (err) {
     console.error("RESEND REGISTRATION CODE ERROR:", err);
     res.status(500).json({ message: "სერვერის შეცდომა" });
@@ -801,7 +911,11 @@ export const resendRegistrationCode = async (req, res) => {
 // POST /auth/forgot-password  { email }
 // პასუხი ყოველთვის ერთნაირია, რომ ვერავინ გაიგოს რომელი ელფოსტებია რეგისტრირებული
 export const forgotPassword = async (req, res) => {
-  const genericResponse = { success: true, codeTtlMinutes: CODE_TTL_MIN, resendAfterSec: RESEND_COOLDOWN_SEC };
+  const genericResponse = {
+    success: true,
+    codeTtlMinutes: CODE_TTL_MIN,
+    resendAfterSec: RESEND_COOLDOWN_SEC,
+  };
 
   try {
     const email = normalizeEmail(req.body?.email);
@@ -809,7 +923,10 @@ export const forgotPassword = async (req, res) => {
       return res.status(400).json({ message: "მოყვანილი Email არასწორია" });
     }
 
-    const userResult = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1)", [email]);
+    const userResult = await pool.query(
+      "SELECT id FROM users WHERE LOWER(email) = LOWER($1)",
+      [email],
+    );
 
     if (userResult.rows.length > 0) {
       // cooldown-ის ან გაგზავნის შეცდომის შედეგს მომხმარებელს არ ვუჩვენებთ (ანგარიშის არსებობა არ გამოვაჩინოთ)
@@ -833,10 +950,18 @@ export const resetPassword = async (req, res) => {
     const newPassword = req.body?.newPassword;
 
     if (!emailRegex.test(email) || !isSixDigits(code)) {
-      return res.status(400).json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
+      return res
+        .status(400)
+        .json({ message: "მიუთითეთ ელფოსტა და 6-ნიშნა კოდი" });
     }
-    if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 72) {
-      return res.status(400).json({ message: "პაროლი უნდა იყოს 8-დან 72 სიმბოლომდე" });
+    if (
+      typeof newPassword !== "string" ||
+      newPassword.length < 8 ||
+      newPassword.length > 72
+    ) {
+      return res
+        .status(400)
+        .json({ message: "პაროლი უნდა იყოს 8-დან 72 სიმბოლომდე" });
     }
 
     const check = await checkCode({ email, purpose: "reset_password", code });
@@ -848,17 +973,19 @@ export const resetPassword = async (req, res) => {
     }
 
     const hash = await bcrypt.hash(newPassword, 10);
-    const upd = await pool.query("UPDATE users SET password_hash = $1 WHERE LOWER(email) = LOWER($2) RETURNING id", [
-      hash,
-      email,
-    ]);
+    const upd = await pool.query(
+      "UPDATE users SET password_hash = $1 WHERE LOWER(email) = LOWER($2) RETURNING id",
+      [hash, email],
+    );
 
     if (upd.rows.length === 0) {
       return res.status(400).json(codeFailureResponse({ reason: "expired" }));
     }
 
     // პაროლის შეცვლისას ყველა მოწყობილობაზე სესია უქმდება
-    await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [upd.rows[0].id]);
+    await pool.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
+      upd.rows[0].id,
+    ]);
 
     res.json({ success: true, message: "პაროლი წარმატებით შეიცვალა" });
   } catch (err) {
@@ -875,29 +1002,66 @@ export const deleteAccount = async (req, res) => {
     await client.query("BEGIN");
 
     // ანგარიშის ფოტოები (გამოქვეყნებული + განხილვის მოლოდინში) შემდეგ გადავიტანოთ deleted/ საქაღალდეში
-    const photoRows = await client.query("SELECT image_url FROM photos WHERE user_id = $1", [userId]);
-    const pendRow = await client.query("SELECT pending_changes FROM users WHERE id = $1", [userId]);
+    const photoRows = await client.query(
+      "SELECT image_url FROM photos WHERE user_id = $1",
+      [userId],
+    );
+    const pendRow = await client.query(
+      "SELECT pending_changes FROM users WHERE id = $1",
+      [userId],
+    );
     const photoUrls = [
       ...photoRows.rows.map((r) => r.image_url),
-      ...(pendRow.rows[0]?.pending_changes?.photos?.new || []).map((p) => p?.image_url),
+      ...(pendRow.rows[0]?.pending_changes?.photos?.new || []).map(
+        (p) => p?.image_url,
+      ),
     ];
 
     // 1. დაკავშირებული დამხმარე ცხრილების გაწმენდა
-    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM user_refresh_tokens WHERE user_id = $1", [
+      userId,
+    ]);
     await client.query("DELETE FROM user_devices WHERE user_id = $1", [userId]);
-    await client.query("DELETE FROM user_locations WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM user_locations WHERE user_id = $1", [
+      userId,
+    ]);
     await client.query("DELETE FROM app_sessions WHERE user_id = $1", [userId]);
-    await client.query("DELETE FROM reward_claims WHERE user_id = $1", [userId]);
+    await client.query("DELETE FROM reward_claims WHERE user_id = $1", [
+      userId,
+    ]);
     await client.query("DELETE FROM photos WHERE user_id = $1", [userId]);
-    await client.query("DELETE FROM likes WHERE from_user_id = $1 OR to_user_id = $1", [userId]);
-    await client.query("DELETE FROM dislikes WHERE from_user_id = $1 OR to_user_id = $1", [userId]);
-    await client.query("DELETE FROM messages WHERE sender_id = $1 OR receiver_id = $1", [userId]);
-    await client.query("DELETE FROM matches WHERE user1_id = $1 OR user2_id = $1", [userId]);
-    await client.query("DELETE FROM blocks WHERE blocker_id = $1 OR blocked_id = $1", [userId]);
-    await client.query("DELETE FROM reports WHERE reporter_id = $1 OR reported_id = $1", [userId]);
-    await client.query("DELETE FROM user_ip_history WHERE user_id = $1", [userId]);
+    await client.query(
+      "DELETE FROM likes WHERE from_user_id = $1 OR to_user_id = $1",
+      [userId],
+    );
+    await client.query(
+      "DELETE FROM dislikes WHERE from_user_id = $1 OR to_user_id = $1",
+      [userId],
+    );
+    await client.query(
+      "DELETE FROM messages WHERE sender_id = $1 OR receiver_id = $1",
+      [userId],
+    );
+    await client.query(
+      "DELETE FROM matches WHERE user1_id = $1 OR user2_id = $1",
+      [userId],
+    );
+    await client.query(
+      "DELETE FROM blocks WHERE blocker_id = $1 OR blocked_id = $1",
+      [userId],
+    );
+    await client.query(
+      "DELETE FROM reports WHERE reporter_id = $1 OR reported_id = $1",
+      [userId],
+    );
+    await client.query("DELETE FROM user_ip_history WHERE user_id = $1", [
+      userId,
+    ]);
     // თუ ეს ადმინი სხვა მომხმარებლებს ამტკიცებდა, FK-ს ვწყვეტთ
-    await client.query("UPDATE users SET reviewed_by = NULL WHERE reviewed_by = $1", [userId]);
+    await client.query(
+      "UPDATE users SET reviewed_by = NULL WHERE reviewed_by = $1",
+      [userId],
+    );
 
     // 2. ამ DELETE-ის გაშვებისას ავტომატურად ამოქმედდება archive_user_full_data ტრიგერი
     await client.query("DELETE FROM users WHERE id = $1", [userId]);

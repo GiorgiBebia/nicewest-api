@@ -322,12 +322,10 @@ export const addRewardLikes = async (req, res) => {
       Date.now() - new Date(last).getTime() < REWARD_MIN_GAP_SECONDS * 1000
     ) {
       await client.query("ROLLBACK");
-      return res
-        .status(429)
-        .json({
-          error: "ძალიან სწრაფად ითხოვთ ბონუსს",
-          code: "REWARD_TOO_FAST",
-        });
+      return res.status(429).json({
+        error: "ძალიან სწრაფად ითხოვთ ბონუსს",
+        code: "REWARD_TOO_FAST",
+      });
     }
 
     await client.query("INSERT INTO reward_claims (user_id) VALUES ($1)", [

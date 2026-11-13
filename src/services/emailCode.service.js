@@ -14,7 +14,10 @@ export const MAX_ATTEMPTS = 5; // არასწორი მცდელობ
 const HMAC_SECRET = `${process.env.JWT_SECRET}:email-code`;
 
 const hashCode = (email, purpose, code) =>
-  crypto.createHmac("sha256", HMAC_SECRET).update(`${purpose}:${email}:${code}`).digest("hex");
+  crypto
+    .createHmac("sha256", HMAC_SECRET)
+    .update(`${purpose}:${email}:${code}`)
+    .digest("hex");
 
 const safeEqualHex = (a, b) => {
   const ba = Buffer.from(a, "hex");
@@ -22,22 +25,26 @@ const safeEqualHex = (a, b) => {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 };
 
-const codeError = (code, extra = {}) => Object.assign(new Error(code), { code, ...extra });
+const codeError = (code, extra = {}) =>
+  Object.assign(new Error(code), { code, ...extra });
 
 // ქმნის ახალ კოდს და ინახავს მის ჰეშს. აბრუნებს კოდს (გასაგზავნად).
 // payload === undefined: არსებული payload რჩება (გამოიყენება "ხელახლა გაგზავნისას"),
 // თუ მოლოდინში ჩანაწერი არ არსებობს, აგდებს NO_PENDING-ს.
 // თუ cooldown-ი არ გასულა, აგდებს COOLDOWN-ს (retryAfter წამებში).
 export const issueCode = async ({ email, purpose, payload }) => {
-  const prev = await pool.query("SELECT created_at FROM email_codes WHERE email = $1 AND purpose = $2", [
-    email,
-    purpose,
-  ]);
+  const prev = await pool.query(
+    "SELECT created_at FROM email_codes WHERE email = $1 AND purpose = $2",
+    [email, purpose],
+  );
 
   if (prev.rows.length > 0) {
-    const elapsedSec = (Date.now() - new Date(prev.rows[0].created_at).getTime()) / 1000;
+    const elapsedSec =
+      (Date.now() - new Date(prev.rows[0].created_at).getTime()) / 1000;
     if (elapsedSec < RESEND_COOLDOWN_SEC) {
-      throw codeError("COOLDOWN", { retryAfter: Math.ceil(RESEND_COOLDOWN_SEC - elapsedSec) });
+      throw codeError("COOLDOWN", {
+        retryAfter: Math.ceil(RESEND_COOLDOWN_SEC - elapsedSec),
+      });
     }
   }
 
@@ -63,12 +70,22 @@ export const issueCode = async ({ email, purpose, payload }) => {
                      attempts = 0,
                      expires_at = EXCLUDED.expires_at,
                      created_at = NOW()`,
-      [email, purpose, codeHash, payload === null ? null : JSON.stringify(payload), expiresAt],
+      [
+        email,
+        purpose,
+        codeHash,
+        payload === null ? null : JSON.stringify(payload),
+        expiresAt,
+      ],
     );
   }
 
   // ძველი, გადაუხდელი ჩანაწერების გაწმენდა
-  pool.query("DELETE FROM email_codes WHERE expires_at < NOW() - INTERVAL '1 day'").catch(() => {});
+  pool
+    .query(
+      "DELETE FROM email_codes WHERE expires_at < NOW() - INTERVAL '1 day'",
+    )
+    .catch(() => {});
 
   return code;
 };
@@ -89,7 +106,11 @@ export const checkCode = async ({ email, purpose, code }) => {
 
   const rec = row.rows[0];
   if (!safeEqualHex(rec.code_hash, hashCode(email, purpose, code))) {
-    return { ok: false, reason: "invalid", attemptsLeft: Math.max(0, MAX_ATTEMPTS - rec.attempts) };
+    return {
+      ok: false,
+      reason: "invalid",
+      attemptsLeft: Math.max(0, MAX_ATTEMPTS - rec.attempts),
+    };
   }
 
   return { ok: true, id: rec.id, payload: rec.payload };
@@ -102,4 +123,7 @@ export const consumeCode = async (id) => {
 };
 
 export const dropCode = (email, purpose) =>
-  pool.query("DELETE FROM email_codes WHERE email = $1 AND purpose = $2", [email, purpose]);
+  pool.query("DELETE FROM email_codes WHERE email = $1 AND purpose = $2", [
+    email,
+    purpose,
+  ]);

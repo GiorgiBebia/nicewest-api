@@ -28,8 +28,18 @@ const router = Router();
 
 router.post("/register", registerLimiter, registerEmailLimiter, register);
 router.post("/register/verify", codeVerifyLimiter, verifyRegistration);
-router.post("/register/resend", emailCodeIpLimiter, emailCodeAddressLimiter, resendRegistrationCode);
-router.post("/forgot-password", emailCodeIpLimiter, emailCodeAddressLimiter, forgotPassword);
+router.post(
+  "/register/resend",
+  emailCodeIpLimiter,
+  emailCodeAddressLimiter,
+  resendRegistrationCode,
+);
+router.post(
+  "/forgot-password",
+  emailCodeIpLimiter,
+  emailCodeAddressLimiter,
+  forgotPassword,
+);
 router.post("/login", loginIpLimiter, loginUserLimiter, login);
 router.post("/social-login", registerLimiter, socialLogin);
 router.post("/refresh", refresh);

@@ -99,3 +99,49 @@ export const archiveRejectedPhotos = async (userId, urls) => {
     console.error("ARCHIVE REJECTED PHOTOS ERROR:", err);
   }
 };
+
+// ძველი წაშლილი ფოტოების საბოლოო გასუფთავება: deleted/ საქაღალდეში (ქვესაქაღალდეებშიც)
+// ყველა ფაილი, რომელიც days დღეზე ძველია, იშლება. best-effort.
+export const purgeOldDeletedPhotos = async (days) => {
+  try {
+    const bucket = getClient().storage.from(PHOTO_BUCKET);
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    let removed = 0;
+
+    const walk = async (prefix) => {
+      let offset = 0;
+      for (;;) {
+        const { data, error } = await bucket.list(prefix, {
+          limit: 100,
+          offset,
+        });
+        if (error || !data || data.length === 0) return;
+        const stale = [];
+        for (const item of data) {
+          const full = `${prefix}/${item.name}`;
+          if (!item.id) {
+            await walk(full); // საქაღალდეა
+          } else {
+            const t = new Date(
+              item.created_at || item.updated_at || 0,
+            ).getTime();
+            if (t && t < cutoff) stale.push(full);
+          }
+        }
+        if (stale.length > 0) {
+          const { error: rmErr } = await bucket.remove(stale);
+          if (rmErr) console.error("PURGE REMOVE ERROR:", rmErr.message);
+          else removed += stale.length;
+        }
+        if (data.length < 100) return;
+        offset += 100;
+      }
+    };
+
+    await walk(DELETED_FOLDER);
+    return removed;
+  } catch (err) {
+    console.error("PURGE DELETED PHOTOS ERROR:", err);
+    return 0;
+  }
+};

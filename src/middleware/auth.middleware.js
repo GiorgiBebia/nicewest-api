@@ -16,17 +16,24 @@ export const authMiddleware = async (req, res, next) => {
 
   try {
     // ბაზიდან ვამოწმებთ იუზერს, მის ადმინისტრატორობას და დაბლოკვის სტატუსს
-    const result = await pool.query("SELECT id, username, is_admin, is_banned FROM users WHERE id = $1", [decoded.id]);
+    const result = await pool.query(
+      "SELECT id, username, is_admin, is_banned FROM users WHERE id = $1",
+      [decoded.id],
+    );
 
     if (result.rows.length === 0) {
       // 401 + code: კლიენტი ხვდება, რომ ანგარიში აღარ არსებობს და გამოდის სისტემიდან
-      return res.status(401).json({ message: "User not found", code: "USER_NOT_FOUND" });
+      return res
+        .status(401)
+        .json({ message: "User not found", code: "USER_NOT_FOUND" });
     }
 
     const user = result.rows[0];
 
     if (user.is_banned) {
-      return res.status(403).json({ message: "User is banned", code: "BANNED" });
+      return res
+        .status(403)
+        .json({ message: "User is banned", code: "BANNED" });
     }
 
     req.user = {
